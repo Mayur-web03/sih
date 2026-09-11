@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
   Activity,
@@ -58,7 +58,14 @@ import {
   type FreezeRequestAudit,
 } from "@/services/freezeRequestsApi";
 
-export const Route = createFileRoute("/dashboard")({ component: Index });
+export const Route = createFileRoute("/dashboard")({
+  beforeLoad: () => {
+    if (typeof window !== "undefined" && localStorage.getItem("ct_auth") !== "true") {
+      throw redirect({ to: "/login" });
+    }
+  },
+  component: Index,
+});
 
 type View =
   | "overview"
