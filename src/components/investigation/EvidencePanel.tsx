@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Copy, Check, ExternalLink, X, ArrowDownLeft, ArrowUpRight, ShieldAlert } from "lucide-react";
 import { shortAddress, formatDateTime, normalizeTimestamp, weiToEth, weiToEthNumber } from "@/lib/format";
 import { riskEngine, type RiskAssessment } from "@/services/risk/RiskEngine";
+import { isTronAddress } from "@/services/api";
 import type { BackendTxRecord } from "@/services/api";
 
 function CopyButton({ text }: { text: string }) {
@@ -82,6 +83,8 @@ function RiskGauge({ risk }: { risk: RiskAssessment }) {
   );
 }
 
+const fmtNum = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
+
 export function EvidencePanel({
   address,
   hop,
@@ -95,25 +98,52 @@ export function EvidencePanel({
   txs: BackendTxRecord[];
   onClose: () => void;
 }) {
-  const incoming = txs.filter((t) => t.to?.toLowerCase() === address.toLowerCase());
-  const outgoing = txs.filter((t) => t.from?.toLowerCase() === address.toLowerCase());
+  // TRON Base58 addresses are case-sensitive; Ethereum addresses are not.
+  const isTron = isTronAddress(address);
+  const sameAddr = (a?: string, b?: string) =>
+    !!a && !!b && (isTron ? a === b : a.toLowerCase() === b.toLowerCase());
 
-  // Wei to ETH conversion using format utility helpers
-  const ethIn = incoming.reduce((s, t) => s + weiToEthNumber(t.value), 0);
-  const ethOut = outgoing.reduce((s, t) => s + weiToEthNumber(t.value), 0);
+  const incoming = txs.filter((t) => sameAddr(t.to, address));
+  const outgoing = txs.filter((t) => sameAddr(t.from, address));
 
-  const risk = riskEngine.calculateWalletRisk({
-    incoming: incoming.length,
-    outgoing: outgoing.length,
-    ethIn,
-    ethOut,
-    hop,
-    txs,
-  });
+  // Ethereum: wei -> ETH.  TRON: value is already a decimal amount.
+  const amountOf = (t: BackendTxRecord) => (isTron ? Number(t.value) || 0 : weiToEthNumber(t.value));
+
+  const ethIn = incoming.reduce((s, t) => s + amountOf(t), 0);
+  const ethOut = outgoing.reduce((s, t) => s + amountOf(t), 0);
+
+  // The risk model is calibrated for ETH volumes -> not applied to TRON.
+  const risk: RiskAssessment | null = isTron
+    ? null
+    : riskEngine.calculateWalletRisk({
+        incoming: incoming.length,
+        outgoing: outgoing.length,
+        ethIn,
+        ethOut,
+        hop,
+        txs,
+      });
+
+  // TRON: a wallet can move several assets, so totals are shown per asset (never summed together)
+  const assetTotals = new Map<string, { in: number; out: number }>();
+  if (isTron) {
+    txs.forEach((t) => {
+      const asset = t.asset || "TRX";
+      const cur = assetTotals.get(asset) ?? { in: 0, out: 0 };
+      const v = Number(t.value) || 0;
+      if (sameAddr(t.to, address)) cur.in += v;
+      if (sameAddr(t.from, address)) cur.out += v;
+      assetTotals.set(asset, cur);
+    });
+  }
 
   const sortedTxs = [...txs].sort(
     (a, b) => new Date(normalizeTimestamp(b.timestamp)).getTime() - new Date(normalizeTimestamp(a.timestamp)).getTime(),
   );
+
+  const txUrl = (hash: string) => (isTron ? `https://tronscan.org/#/transaction/${hash}` : `https://etherscan.io/tx/${hash}`);
+  const addrUrl = isTron ? `https://tronscan.org/#/address/${address}` : `https://etherscan.io/address/${address}`;
+  const explorerName = isTron ? "Tronscan" : "Etherscan";
 
   return (
     <aside
@@ -136,7 +166,9 @@ export function EvidencePanel({
 
       <div style={{ padding: "14px 16px", borderBottom: "1px solid #1c2530", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>FORENSIC EVIDENCE</span>
+          <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>
+            FORENSIC EVIDENCE{isTron ? " · TRON" : ""}
+          </span>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
             <code style={{ fontSize: 12, color: "#e6edf3" }}>{shortAddress(address, 8, 6)}</code>
             <CopyButton text={address} />
@@ -148,29 +180,66 @@ export function EvidencePanel({
       </div>
 
       <div style={{ padding: "16px", overflowY: "auto", flex: 1 }}>
-        {/* Risk */}
-        <RiskGauge risk={risk} />
+        {/* Risk (Ethereum only) */}
+        {risk ? (
+          <>
+            <RiskGauge risk={risk} />
 
-        {risk.signals.length > 0 && (
-          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
-            {risk.signals.map((s, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: s.positive ? "#7fe0ac" : "#c7d2dc" }}>
-                {s.positive ? <Check size={12} /> : <ShieldAlert size={12} />}
-                {s.label}
+            {risk.signals.length > 0 && (
+              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+                {risk.signals.map((s, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: s.positive ? "#7fe0ac" : "#c7d2dc" }}>
+                    {s.positive ? <Check size={12} /> : <ShieldAlert size={12} />}
+                    {s.label}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
+        ) : (
+          <p style={{ fontSize: 11, color: "#66757f", lineHeight: 1.5, margin: 0 }}>
+            Risk scoring is currently calibrated for Ethereum only and is not available for TRON wallets yet.
+          </p>
         )}
 
         {/* Stats grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 18 }}>
           <StatBox icon={<ArrowDownLeft size={13} color="#7fe0ac" />} label="Incoming" value={`${incoming.length} tx`} />
           <StatBox icon={<ArrowUpRight size={13} color="#e7bd74" />} label="Outgoing" value={`${outgoing.length} tx`} />
-          <StatBox label="ETH In" value={`${ethIn.toFixed(4)}`} accent="#7fe0ac" />
-          <StatBox label="ETH Out" value={`${ethOut.toFixed(4)}`} accent="#e7bd74" />
-          <StatBox label="Net Flow" value={`${(ethIn - ethOut).toFixed(4)} ETH`} />
+          {isTron ? (
+            <>
+              <StatBox label="Network" value="TRON" />
+              <StatBox label="Source" value={hop === 0 ? "Yes" : "No"} />
+            </>
+          ) : (
+            <>
+              <StatBox label="ETH In" value={`${ethIn.toFixed(4)}`} accent="#7fe0ac" />
+              <StatBox label="ETH Out" value={`${ethOut.toFixed(4)}`} accent="#e7bd74" />
+              <StatBox label="Net Flow" value={`${(ethIn - ethOut).toFixed(4)} ETH`} />
+            </>
+          )}
           <StatBox label="Hop" value={hop === 0 ? "START" : `${Math.abs(hop)}`} />
         </div>
+
+        {/* TRON: per-asset flow */}
+        {isTron && assetTotals.size > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>ASSET FLOW</span>
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              {Array.from(assetTotals.entries()).map(([asset, t]) => (
+                <div
+                  key={asset}
+                  style={{ background: "#141c24", border: "1px solid #1c2530", borderRadius: 6, padding: "8px 10px", fontSize: 11, color: "#c7d2dc" }}
+                >
+                  <strong style={{ color: "#e6edf3" }}>{asset}</strong>
+                  <div style={{ marginTop: 3, color: "#8798a8" }}>
+                    In {fmtNum(t.in)} · Out {fmtNum(t.out)} · Net {fmtNum(t.in - t.out)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Transaction list */}
         <div style={{ marginTop: 20 }}>
@@ -179,7 +248,7 @@ export function EvidencePanel({
           </span>
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
             {sortedTxs.map((tx, i) => {
-              const isIncoming = tx.to?.toLowerCase() === address.toLowerCase();
+              const isIncoming = sameAddr(tx.to, address);
               return (
                 <div
                   key={tx.tx_hash ?? i}
@@ -196,17 +265,19 @@ export function EvidencePanel({
                       {isIncoming ? <ArrowDownLeft size={11} /> : <ArrowUpRight size={11} />}
                       {isIncoming ? "IN" : "OUT"}
                     </span>
-                    <span style={{ color: "#e6edf3", fontWeight: 600 }}>{weiToEth(tx.value)} ETH</span>
+                    <span style={{ color: "#e6edf3", fontWeight: 600 }}>
+                      {isTron ? `${fmtNum(Number(tx.value) || 0)} ${tx.asset ?? "TRX"}` : `${weiToEth(tx.value)} ETH`}
+                    </span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 5, color: "#8798a8" }}>
                     <code>{shortAddress(tx.tx_hash, 8, 6)}</code>
                     <CopyButton text={tx.tx_hash} />
                     <a
-                      href={`https://etherscan.io/tx/${tx.tx_hash}`}
+                      href={txUrl(tx.tx_hash)}
                       target="_blank"
                       rel="noreferrer"
                       style={{ color: "#66757f", display: "inline-flex", marginLeft: "auto" }}
-                      title="View on Etherscan"
+                      title={`View on ${explorerName}`}
                     >
                       <ExternalLink size={12} />
                     </a>
@@ -214,6 +285,11 @@ export function EvidencePanel({
                   <div style={{ marginTop: 3, color: "#5a6771", fontSize: 10 }}>
                     {formatDateTime(normalizeTimestamp(tx.timestamp))} · Block {tx.block_number}
                   </div>
+                  {isTron && tx.contract_address && (
+                    <div style={{ marginTop: 3, color: "#5a6771", fontSize: 10 }}>
+                      Contract {shortAddress(tx.contract_address, 6, 4)}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -221,7 +297,7 @@ export function EvidencePanel({
         </div>
 
         <a
-          href={`https://etherscan.io/address/${address}`}
+          href={addrUrl}
           target="_blank"
           rel="noreferrer"
           style={{
@@ -239,7 +315,7 @@ export function EvidencePanel({
             textDecoration: "none",
           }}
         >
-          <ExternalLink size={13} /> View wallet on Etherscan
+          <ExternalLink size={13} /> View wallet on {explorerName}
         </a>
       </div>
     </aside>

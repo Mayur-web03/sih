@@ -32,7 +32,14 @@ import { formatDate, formatDateTime, formatInr, normalizeTimestamp, shortAddress
 import { RiskBadge, RiskBar } from "@/components/shared/RiskBadge";
 import { FundFlowGraph } from "@/components/investigation/FundFlowGraphInner";
 import { CrossCaseNetworkGraph } from "@/components/network/CrossCaseNetworkGraph";
-import { streamTrace } from "@/services/api";
+import {
+  streamTrace,
+  traceTronWallet,
+  isTronAddress,
+  isEthereumAddress,
+  type TraceNetwork,
+  type TronAssetType,
+} from "@/services/api";
 import {
   createCase,
   listCases,
@@ -133,6 +140,8 @@ function Index() {
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceLogs, setTraceLogs] = useState<string[]>([]);
   const [traceError, setTraceError] = useState("");
+  const [network, setNetwork] = useState<TraceNetwork>("ethereum");
+  const [tronAssetType, setTronAssetType] = useState<TronAssetType>("all");
 
   const showToast = (message: string) => {
     setToast(message);
@@ -152,6 +161,7 @@ function Index() {
 
     // Load the wallet into Investigation
     setWalletInput(selected.primary_wallet);
+    setNetwork(isTronAddress(selected.primary_wallet) ? "tron" : "ethereum");
 
     try {
       const txs = await getCaseTransactions(id);
@@ -345,6 +355,10 @@ function Index() {
               setWalletInput={setWalletInput}
               maxHops={maxHops}
               setMaxHops={setMaxHops}
+              network={network}
+              setNetwork={setNetwork}
+              tronAssetType={tronAssetType}
+              setTronAssetType={setTronAssetType}
               traceResult={traceResult}
               tracedAddress={tracedAddress}
               loading={traceLoading}
@@ -722,12 +736,23 @@ function CasesView({
   );
 }
 
+// Amount label that works for both networks.
+// Ethereum: value is wei. TRON: value is already a decimal amount.
+function txAmountLabel(tx: any): string {
+  if (tx?.network === "tron") return `${tx.value} ${tx.asset ?? "TRX"}`;
+  return `${weiToEth(tx.value)} ETH`;
+}
+
 function TraceView({
   selectedCase,
   walletInput,
   setWalletInput,
   maxHops,
   setMaxHops,
+  network,
+  setNetwork,
+  tronAssetType,
+  setTronAssetType,
   traceResult,
   tracedAddress,
   loading,
@@ -744,6 +769,10 @@ function TraceView({
   setWalletInput: (v: string) => void;
   maxHops: number;
   setMaxHops: (v: number) => void;
+  network: TraceNetwork;
+  setNetwork: (v: TraceNetwork) => void;
+  tronAssetType: TronAssetType;
+  setTronAssetType: (v: TronAssetType) => void;
   traceResult: TraceResponse | null;
   tracedAddress: string;
   loading: boolean;
@@ -757,10 +786,67 @@ function TraceView({
 }) {
   const allTx = traceResult ? [...(traceResult.inward || []), ...(traceResult.outward || [])] : [];
 
+  const tracedNetworkLabel = isTronAddress(tracedAddress) ? "TRON" : "Ethereum";
+
+  const handleNetworkChange = (next: TraceNetwork) => {
+    if (next === network) return;
+    setNetwork(next);
+    setError("");
+    // TRON tracing is heavier (many API calls per hop) -> keep hops small by default
+    if (next === "tron" && maxHops > 5) setMaxHops(2);
+  };
+
   const handleAnalyze = () => {
     setError("");
+
+    // ---------------- TRON ----------------
+    if (network === "tron") {
+      const addr = walletInput.trim();
+      if (!isTronAddress(addr)) {
+        setError(
+          isEthereumAddress(addr)
+            ? "This looks like an Ethereum address. Switch the network to Ethereum, or enter a TRON address (T...)."
+            : "Invalid wallet address. Enter a valid TRON address (T...)."
+        );
+        return;
+      }
+
+      setLoading(true);
+      setLogs([
+        "Tracing TRON wallet...",
+        "Fetching transactions from TronGrid...",
+        "Building investigation graph...",
+      ]);
+
+      traceTronWallet(addr, maxHops, tronAssetType)
+        .then((res) => {
+          onTraceComplete(res as unknown as TraceResponse, addr);
+          onToast(
+            res.summary.total_transactions > 0
+              ? `Traced ${res.summary.total_transactions} TRON transactions`
+              : "No transactions found for this wallet."
+          );
+        })
+        .catch((err) => {
+          setError(
+            err instanceof TypeError
+              ? "Unable to connect to investigation server."
+              : err instanceof Error
+                ? err.message
+                : "TRON investigation failed. Please try again."
+          );
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    // ---------------- Ethereum (existing flow, unchanged) ----------------
     if (!/^0x[a-fA-F0-9]{40}$/.test(walletInput.trim())) {
-      setError("Invalid wallet address. Enter a valid Ethereum address (0x...).");
+      setError(
+        isTronAddress(walletInput)
+          ? "This looks like a TRON address. Switch the network to TRON."
+          : "Invalid wallet address. Enter a valid Ethereum address (0x...)."
+      );
       return;
     }
     setLoading(true);
@@ -828,13 +914,30 @@ function TraceView({
   return (
     <div className="view-stack">
       <div className="trace-toolbar">
+        <div className="case-select" style={{ minWidth: 210 }}>
+          <span>Network</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            {(["ethereum", "tron"] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={network === n ? "primary-button" : "secondary-button"}
+                onClick={() => handleNetworkChange(n)}
+                disabled={loading}
+                style={{ flex: 1, padding: "8px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+              >
+                {n === "ethereum" ? "Ethereum / Etherscan" : "TRON"}
+              </button>
+            ))}
+          </div>
+        </div>
         <label className="case-select" style={{ flex: 1 }}>
           <span>Wallet address</span>
           <input
             className="text-input"
             value={walletInput}
             onChange={(e) => setWalletInput(e.target.value)}
-            placeholder="0x..."
+            placeholder={network === "tron" ? "T..." : "0x..."}
           />
         </label>
         <label className="case-select" style={{ minWidth: 130 }}>
@@ -844,18 +947,32 @@ function TraceView({
             value={maxHops}
             onChange={(e) => setMaxHops(Number(e.target.value))}
           >
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+            {(network === "tron" ? [1, 2, 3, 4, 5] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).map((n) => (
               <option key={n} value={n}>
                 {n} hop{n > 1 ? "s" : ""}
               </option>
             ))}
           </select>
         </label>
+        {network === "tron" && (
+          <label className="case-select" style={{ minWidth: 110 }}>
+            <span>Asset</span>
+            <select
+              className="text-input"
+              value={tronAssetType}
+              onChange={(e) => setTronAssetType(e.target.value as TronAssetType)}
+            >
+              <option value="all">All</option>
+              <option value="trx">TRX</option>
+              <option value="trc20">TRC20</option>
+            </select>
+          </label>
+        )}
         <button className="primary-button" onClick={handleAnalyze} disabled={loading}>
-          {loading ? "Tracing..." : "Analyze wallet"}
+          {loading ? (network === "tron" ? "Tracing TRON wallet..." : "Tracing...") : "Analyze wallet"}
         </button>
         <span className="trace-summary">
-          <Zap size={15} /> {allTx.length} transactions traced
+          <Zap size={15} /> {allTx.length} transactions traced{traceResult ? ` · ${tracedNetworkLabel}` : ""}
         </span>
       </div>
 
@@ -880,13 +997,25 @@ function TraceView({
         <div className="empty-state">
           <GitBranch size={22} />
           <strong>No wallet analyzed yet</strong>
-          <span>Enter an Ethereum address above and click Analyze Wallet.</span>
+          <span>
+            {network === "tron"
+              ? "Enter a TRON address (T...) above and click Analyze Wallet."
+              : "Enter an Ethereum address above and click Analyze Wallet."}
+          </span>
         </div>
       )}
 
-      {!loading && traceResult && (
+      {!loading && traceResult && allTx.length === 0 && (
+        <div className="empty-state">
+          <GitBranch size={22} />
+          <strong>No transactions found for this wallet.</strong>
+          <span>Try a different address, more hops, or a different asset filter.</span>
+        </div>
+      )}
+
+      {!loading && traceResult && allTx.length > 0 && (
         <section className="panel trace-panel">
-          <SectionHeading title="Fund flow trace" meta={`${allTx.length} transactions`} />
+          <SectionHeading title="Fund flow trace" meta={`${allTx.length} transactions · ${tracedNetworkLabel}`} />
           <FundFlowGraph
             address={tracedAddress}
             transactions={allTx}
@@ -909,8 +1038,9 @@ function RiskView({
 }) {
   const allTx = traceResult ? [...(traceResult.inward || []), ...(traceResult.outward || [])] : [];
 
+  const isTronTrace = isTronAddress(tracedAddress);
   let liveAssessment: RiskAssessment | null = null;
-  if (tracedAddress && allTx.length > 0) {
+  if (tracedAddress && allTx.length > 0 && !isTronTrace) {
     const incoming = allTx.filter((t) => (t.direction as string) === "inward" || (t.direction as string) === "in");
     const outgoing = allTx.filter((t) => (t.direction as string) === "outward" || (t.direction as string) === "out");
     const ethIn = incoming.reduce((s, t) => s + Number(t.value || 0) / 1e18, 0);
@@ -933,7 +1063,11 @@ function RiskView({
         <div className="empty-state">
           <ShieldCheck size={22} />
           <strong>No risk data yet</strong>
-          <span>Analyze a wallet in the Investigation workspace to see a live, evidence-based risk breakdown here.</span>
+          <span>
+            {isTronTrace
+              ? "Risk scoring is currently calibrated for Ethereum only and is not available for TRON traces yet."
+              : "Analyze a wallet in the Investigation workspace to see a live, evidence-based risk breakdown here."}
+          </span>
         </div>
       </div>
     );
@@ -1111,7 +1245,7 @@ function TimelineView({ traceResult, tracedAddress }: { traceResult: TraceRespon
                 <span className="source-tag">Hop {tx.hop}</span>
               </div>
               <p>
-                {shortAddress(tx.from)} → {shortAddress(tx.to)} · {weiToEth(tx.value)} ETH
+                {shortAddress(tx.from)} → {shortAddress(tx.to)} · {txAmountLabel(tx)}
               </p>
               <small>{formatDateTime(normalizeTimestamp(tx.timestamp))}</small>
             </div>
@@ -1258,7 +1392,7 @@ function EvidenceView({
                 onClick={() =>
                   onOpen(
                     eventLabel,
-                    `Hop ${tx.hop} · ${shortAddress(tx.from)} \u2192 ${shortAddress(tx.to)}\n\nValue: ${weiToEth(tx.value)} ETH\nBlock: ${tx.block_number}\n\nMethodology: Direct on-chain transaction observed during wallet trace.`,
+                    `Hop ${tx.hop} · ${shortAddress(tx.from)} \u2192 ${shortAddress(tx.to)}\n\nValue: ${txAmountLabel(tx)}\nBlock: ${tx.block_number}\n\nMethodology: Direct on-chain transaction observed during wallet trace.`,
                   )
                 }
               >
@@ -1268,7 +1402,7 @@ function EvidenceView({
                 </div>
                 <strong>{eventLabel}</strong>
                 <p>
-                  Hop {tx.hop} · {shortAddress(tx.from)} → {shortAddress(tx.to)} · {weiToEth(tx.value)} ETH
+                  Hop {tx.hop} · {shortAddress(tx.from)} → {shortAddress(tx.to)} · {txAmountLabel(tx)}
                 </p>
                 <div>
                   <code>{shortAddress(tx.tx_hash, 10, 6)}</code>

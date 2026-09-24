@@ -404,7 +404,7 @@ export function FundFlowGraph({
                 const midX = (start.x + end.x) / 2;
                 const midY = (start.y + end.y) / 2;
                 const isActive = l.id === activeEdgeId;
-                const text = `${l.count} tx · ${l.totalValue.toFixed(3)} ETH`;
+                const text = `${l.count} tx · ${l.totalValue.toFixed(3)} ${l.asset ?? "ETH"}`;
                 ctx.font = `${isActive ? 8.5 : 7.5}px sans-serif`;
                 const textWidth = ctx.measureText(text).width;
                 ctx.fillStyle = "rgba(11,16,22,0.9)";
@@ -414,12 +414,15 @@ export function FundFlowGraph({
                 ctx.fillText(text, midX, midY + 2.5);
               }}
               linkLabel={(l: any) =>
-                `${l.direction === "in" ? "Inward" : "Outward"}\n${l.source} → ${l.target}\n${l.count} tx · ${l.totalValue.toFixed(6)} ETH`
+                `${l.direction === "in" ? "Inward" : "Outward"}\n${l.source} → ${l.target}\n${l.count} tx · ${l.totalValue.toFixed(6)} ${l.asset ?? "ETH"}`
               }
               nodeLabel={(n: any) =>
                 n.isStart
-                  ? `START WALLET\n${n.id}\n${n.degree} total tx`
-                  : `${n.id}\nHop ${Math.abs(n.hop)} (${n.direction})\nIncoming: ${n.incoming} tx · ${n.ethIn.toFixed(6)} ETH\nOutgoing: ${n.outgoing} tx · ${n.ethOut.toFixed(6)} ETH`
+                  ? `START WALLET${n.network === "tron" ? " (TRON)" : ""}\n${n.id}\n${n.degree} total tx`
+                  : n.network === "tron"
+                    ? // TRON wallets can hold several assets, so don't add TRX + USDT together
+                      `${n.id}\nHop ${Math.abs(n.hop)} (TRON)\nIncoming: ${n.incoming} tx\nOutgoing: ${n.outgoing} tx`
+                    : `${n.id}\nHop ${Math.abs(n.hop)} (${n.direction})\nIncoming: ${n.incoming} tx · ${n.ethIn.toFixed(6)} ETH\nOutgoing: ${n.outgoing} tx · ${n.ethOut.toFixed(6)} ETH`
               }
               onNodeClick={handleNodeClick}
               onLinkClick={handleLinkClick}

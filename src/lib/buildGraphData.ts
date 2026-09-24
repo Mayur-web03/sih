@@ -13,6 +13,7 @@ export type GraphNode = {
   ethOut: number;
   isStart: boolean;
   direction: "in" | "out" | "mixed";
+  network: "ethereum" | "tron";
   x: number;
   y: number;
   fx: number;
@@ -25,6 +26,9 @@ export type GraphEdge = {
   target: string;
   txHashes: string[];
   totalValue: number;
+  /** "ETH" for Ethereum, "TRX" / "USDT" / ... for TRON */
+  asset: string;
+  network: "ethereum" | "tron";
   hop: number;
   direction: "in" | "out";
   count: number;
@@ -44,19 +48,35 @@ type NodeInfo = {
 
 const isInward = (d: string) => d === "in" || d === "inward";
 
+// TRON Base58 address. Ethereum addresses start with 0x, so this never
+// matches an Ethereum address.
+const TRON_ADDR_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+
 export function buildGraphData(address: string, transactions: BackendTxRecord[]) {
-  const startId = address.toLowerCase();
+  const isTron = TRON_ADDR_RE.test(address.trim());
+  const network: "ethereum" | "tron" = isTron ? "tron" : "ethereum";
+
+  // Ethereum addresses are case-insensitive -> lowercase (existing behaviour).
+  // TRON Base58 addresses are CASE-SENSITIVE -> must NOT be lowercased.
+  const norm = (a?: string) => (a ? (isTron ? a.trim() : a.toLowerCase()) : a);
+
+  // Ethereum: value is wei. TRON: value is already a decimal amount.
+  const amountOf = (tx: BackendTxRecord) =>
+    isTron ? Number(tx.value || 0) || 0 : weiToEthNumber(tx.value);
+
+  const startId = norm(address) as string;
 
   const nodeMap = new Map<string, NodeInfo>();
   const edgeMap = new Map<string, GraphEdge>();
 
   transactions.forEach((tx) => {
     const direction: "in" | "out" = isInward(tx.direction) ? "in" : "out";
-    const counterparty = (direction === "in" ? tx.from : tx.to)?.toLowerCase();
-    const from = tx.from?.toLowerCase();
-    const to = tx.to?.toLowerCase();
-    const value = weiToEthNumber(tx.value); // ✅ FIXED: wei → ETH
+    const counterparty = norm(direction === "in" ? tx.from : tx.to);
+    const from = norm(tx.from);
+    const to = norm(tx.to);
+    const value = amountOf(tx);
     const hop = Math.max(1, Number(tx.hop) || 1);
+    const asset = isTron ? tx.asset || "TRX" : "ETH";
 
     if (counterparty && counterparty !== startId) {
       const existing = nodeMap.get(counterparty);
@@ -86,7 +106,10 @@ export function buildGraphData(address: string, transactions: BackendTxRecord[])
     }
 
     if (!from || !to) return;
-    const edgeKey = `${from}->${to}`;
+
+    // TRON: keep TRX and each token (USDT, ...) as separate edges so
+    // different assets are never added together.
+    const edgeKey = isTron ? `${from}->${to}:${asset}` : `${from}->${to}`;
     const existingEdge = edgeMap.get(edgeKey);
     if (existingEdge) {
       existingEdge.txHashes.push(tx.tx_hash);
@@ -104,6 +127,8 @@ export function buildGraphData(address: string, transactions: BackendTxRecord[])
         target: to,
         txHashes: [tx.tx_hash],
         totalValue: value,
+        asset,
+        network,
         hop,
         direction,
         count: 1,
@@ -174,10 +199,11 @@ export function buildGraphData(address: string, transactions: BackendTxRecord[])
       degree: transactions.length,
       incoming: transactions.filter((t) => isInward(t.direction)).length,
       outgoing: transactions.filter((t) => !isInward(t.direction)).length,
-      ethIn: transactions.filter((t) => isInward(t.direction)).reduce((s, t) => s + weiToEthNumber(t.value), 0), // ✅ FIXED
-      ethOut: transactions.filter((t) => !isInward(t.direction)).reduce((s, t) => s + weiToEthNumber(t.value), 0), // ✅ FIXED
+      ethIn: transactions.filter((t) => isInward(t.direction)).reduce((s, t) => s + amountOf(t), 0),
+      ethOut: transactions.filter((t) => !isInward(t.direction)).reduce((s, t) => s + amountOf(t), 0),
       isStart: true,
       direction: "mixed",
+      network,
       x: 0,
       y: 0,
       fx: 0,
@@ -199,6 +225,7 @@ export function buildGraphData(address: string, transactions: BackendTxRecord[])
       ethOut: info.ethOut,
       isStart: false,
       direction: dir,
+      network,
       x: pos.x,
       y: pos.y,
       fx: pos.x,

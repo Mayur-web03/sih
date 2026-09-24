@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, Wallet } from "lucide-react";
-import { shortAddress, weiToEth, formatInr } from "@/lib/format";
+import { shortAddress, formatInr } from "@/lib/format";
 import { riskEngine } from "@/services/risk/RiskEngine";
 import type { GraphNode } from "@/lib/buildGraphData";
 import type { BackendTxRecord } from "@/services/api";
@@ -32,6 +32,8 @@ export function BlockView({
 
   const cardRisk = (node: GraphNode) => {
     if (node.isStart) return { level: "Low" as const, score: 0 };
+    // Risk model is calibrated for ETH volumes -> not applied to TRON
+    if (node.network === "tron") return { level: "Low" as const, score: 0 };
     const info = nodeInfoMap.get(node.id);
     if (!info) return { level: "Low" as const, score: 0 };
     return riskEngine.calculateWalletRisk({
@@ -84,11 +86,12 @@ export function BlockView({
           }}
         >
           {ordered.map((node, i) => {
+            const isTron = node.network === "tron";
             const risk = cardRisk(node);
             const colors = node.isStart
               ? { border: "#3fc7f4", bg: "#0f2a33", text: "#8fd8f0", badge: "#3fc7f4" }
               : riskColors[risk.level];
-            const totalEth = node.isStart ? node.ethIn + node.ethOut : node.ethIn + node.ethOut;
+            const totalEth = node.ethIn + node.ethOut;
             const inr = totalEth * ETH_TO_INR_RATE;
 
             return (
@@ -104,7 +107,7 @@ export function BlockView({
                       flexShrink: 0,
                     }}
                   >
-                    <span style={{ fontSize: 9, color: "#66757f", marginBottom: 4 }}>ETH</span>
+                    <span style={{ fontSize: 9, color: "#66757f", marginBottom: 4 }}>{isTron ? "TRON" : "ETH"}</span>
                     <svg width="90" height="14" style={{ overflow: "visible" }}>
                       <line
                         x1="0"
@@ -155,12 +158,12 @@ export function BlockView({
                     {shortAddress(node.id, 6, 4)}
                   </div>
                   <div style={{ fontSize: 10, color: "#66757f", marginTop: 3 }}>
-                    Ethereum · {node.isStart ? "START" : `hop ${Math.abs(node.hop)}`}
+                    {isTron ? "TRON" : "Ethereum"} · {node.isStart ? "START" : `hop ${Math.abs(node.hop)}`}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginTop: 8 }}>
-                    {formatInr(inr, true)}
+                    {isTron ? `${node.degree} tx` : formatInr(inr, true)}
                   </div>
-                  {!node.isStart && (
+                  {!node.isStart && !isTron && (
                     <div
                       style={{
                         display: "inline-flex",
