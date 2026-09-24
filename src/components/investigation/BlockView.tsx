@@ -5,7 +5,6 @@ import { riskEngine } from "@/services/risk/RiskEngine";
 import type { GraphNode } from "@/lib/buildGraphData";
 import type { BackendTxRecord } from "@/services/api";
 
-// NOTE: adjust this to your live ETH/INR rate source if you have one
 const ETH_TO_INR_RATE = 350000;
 
 export function BlockView({
@@ -19,7 +18,6 @@ export function BlockView({
 }) {
   const [scale, setScale] = useState(1);
 
-  // order: start wallet first, then by absolute hop ascending
   const ordered = useMemo(() => {
     const start = nodes.find((n) => n.isStart);
     const rest = nodes
@@ -32,8 +30,6 @@ export function BlockView({
 
   const cardRisk = (node: GraphNode) => {
     if (node.isStart) return { level: "Low" as const, score: 0 };
-    // Risk model is calibrated for ETH volumes -> not applied to TRON
-    if (node.network === "tron") return { level: "Low" as const, score: 0 };
     const info = nodeInfoMap.get(node.id);
     if (!info) return { level: "Low" as const, score: 0 };
     return riskEngine.calculateWalletRisk({
@@ -43,6 +39,7 @@ export function BlockView({
       ethOut: info.ethOut,
       hop: info.hop,
       txs: info.txs,
+      network: node.network,
     });
   };
 
@@ -96,7 +93,6 @@ export function BlockView({
 
             return (
               <div key={node.id} style={{ display: "flex", alignItems: "center" }}>
-                {/* Connector (skip before first card) */}
                 {i > 0 && (
                   <div
                     style={{
@@ -123,7 +119,6 @@ export function BlockView({
                   </div>
                 )}
 
-                {/* Card */}
                 <button
                   onClick={() => {
                     const info = nodeInfoMap.get(node.id);
@@ -163,7 +158,7 @@ export function BlockView({
                   <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginTop: 8 }}>
                     {isTron ? `${node.degree} tx` : formatInr(inr, true)}
                   </div>
-                  {!node.isStart && !isTron && (
+                  {!node.isStart && (
                     <div
                       style={{
                         display: "inline-flex",
@@ -184,7 +179,6 @@ export function BlockView({
         </div>
       </div>
 
-      {/* Header-style summary (optional, matches screenshot top-right) */}
       <div
         style={{
           position: "absolute",
@@ -198,7 +192,6 @@ export function BlockView({
         {totalTx} transactions
       </div>
 
-      {/* Zoom controls, bottom-left, like screenshot */}
       <div
         style={{
           position: "absolute",

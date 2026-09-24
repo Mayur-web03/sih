@@ -39,6 +39,7 @@ import {
   isEthereumAddress,
   type TraceNetwork,
   type TronAssetType,
+  type BackendTxRecord,
 } from "@/services/api";
 import {
   createCase,
@@ -159,7 +160,6 @@ function Index() {
       return;
     }
 
-    // Load the wallet into Investigation
     setWalletInput(selected.primary_wallet);
     setNetwork(isTronAddress(selected.primary_wallet) ? "tron" : "ethereum");
 
@@ -200,10 +200,7 @@ function Index() {
           is_error: tx.is_error,
         }));
 
-      const maxHop = Math.max(
-        0,
-        ...txs.map((tx) => Number(tx.hop) || 0)
-      );
+      const maxHop = Math.max(0, ...txs.map((tx) => Number(tx.hop) || 0));
 
       setTraceResult({
         address: selected.primary_wallet,
@@ -222,24 +219,16 @@ function Index() {
     } catch (err) {
       console.error("Failed to load case transactions:", err);
       setTraceResult(null);
-      setTraceError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load saved case transactions"
-      );
+      setTraceError(err instanceof Error ? err.message : "Failed to load saved case transactions");
     }
   };
 
   return (
     <div className="app-frame">
       <aside className={`sidebar ${sidebarOpen ? "" : "sidebar-collapsed"} ${mobileMenu ? "mobile-visible" : ""}`}>
-                <div className="brand">
+        <div className="brand">
           <div className="brand-mark">
-            <img
-              src="/favicon.png"
-              alt="CryptoTrace logo"
-              style={{ width: 40, height: 40, objectFit: "contain", display: "block" }}
-            />
+            <img src="/favicon.png" alt="CryptoTrace logo" style={{ width: 40, height: 40, objectFit: "contain", display: "block" }} />
           </div>
           {sidebarOpen && (
             <div>
@@ -310,11 +299,7 @@ function Index() {
           <div className="top-actions">
             <label className="global-search">
               <Search size={16} />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search cases, wallets, transactions"
-              />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search cases, wallets, transactions" />
               <kbd>⌘ K</kbd>
             </label>
             <button className="icon-button notification" aria-label="Notifications" onClick={() => showToast("No new critical alerts")}>
@@ -736,8 +721,6 @@ function CasesView({
   );
 }
 
-// Amount label that works for both networks.
-// Ethereum: value is wei. TRON: value is already a decimal amount.
 function txAmountLabel(tx: any): string {
   if (tx?.network === "tron") return `${tx.value} ${tx.asset ?? "TRX"}`;
   return `${weiToEth(tx.value)} ETH`;
@@ -785,21 +768,18 @@ function TraceView({
   onTraceComplete: (result: TraceResponse, address: string) => void;
 }) {
   const allTx = traceResult ? [...(traceResult.inward || []), ...(traceResult.outward || [])] : [];
-
   const tracedNetworkLabel = isTronAddress(tracedAddress) ? "TRON" : "Ethereum";
 
   const handleNetworkChange = (next: TraceNetwork) => {
     if (next === network) return;
     setNetwork(next);
     setError("");
-    // TRON tracing is heavier (many API calls per hop) -> keep hops small by default
     if (next === "tron" && maxHops > 5) setMaxHops(2);
   };
 
   const handleAnalyze = () => {
     setError("");
 
-    // ---------------- TRON ----------------
     if (network === "tron") {
       const addr = walletInput.trim();
       if (!isTronAddress(addr)) {
@@ -821,6 +801,29 @@ function TraceView({
       traceTronWallet(addr, maxHops, tronAssetType)
         .then((res) => {
           onTraceComplete(res as unknown as TraceResponse, addr);
+
+          const allTx = [...(res.inward || []), ...(res.outward || [])];
+          if (selectedCase && allTx.length > 0) {
+            const incoming = allTx.filter((t) => (t.direction as string) === "inward" || (t.direction as string) === "in");
+            const outgoing = allTx.filter((t) => (t.direction as string) === "outward" || (t.direction as string) === "out");
+            const tronIn = incoming.reduce((s, t) => s + (Number(t.value) || 0), 0);
+            const tronOut = outgoing.reduce((s, t) => s + (Number(t.value) || 0), 0);
+
+            const assessment = riskEngine.calculateWalletRisk({
+              incoming: incoming.length,
+              outgoing: outgoing.length,
+              ethIn: tronIn,
+              ethOut: tronOut,
+              hop: res.summary?.max_hops ?? 0,
+              txs: allTx as BackendTxRecord[],
+              network: "tron",
+            });
+
+            updateCase(selectedCase.id, { risk_score: assessment.score }).catch((err) => {
+              console.error("Failed to persist TRON risk score:", err);
+            });
+          }
+
           onToast(
             res.summary.total_transactions > 0
               ? `Traced ${res.summary.total_transactions} TRON transactions`
@@ -840,7 +843,6 @@ function TraceView({
       return;
     }
 
-    // ---------------- Ethereum (existing flow, unchanged) ----------------
     if (!/^0x[a-fA-F0-9]{40}$/.test(walletInput.trim())) {
       setError(
         isTronAddress(walletInput)
@@ -891,7 +893,8 @@ function TraceView({
             ethIn,
             ethOut,
             hop: res.summary?.max_hops ?? 0,
-            txs: allTx,
+            txs: allTx as BackendTxRecord[],
+            network: "ethereum",
           });
 
           updateCase(selectedCase.id, {
@@ -1040,18 +1043,20 @@ function RiskView({
 
   const isTronTrace = isTronAddress(tracedAddress);
   let liveAssessment: RiskAssessment | null = null;
-  if (tracedAddress && allTx.length > 0 && !isTronTrace) {
+  if (tracedAddress && allTx.length > 0) {
     const incoming = allTx.filter((t) => (t.direction as string) === "inward" || (t.direction as string) === "in");
     const outgoing = allTx.filter((t) => (t.direction as string) === "outward" || (t.direction as string) === "out");
-    const ethIn = incoming.reduce((s, t) => s + Number(t.value || 0) / 1e18, 0);
-    const ethOut = outgoing.reduce((s, t) => s + Number(t.value || 0) / 1e18, 0);
+    const amountOf = (t: { value?: string | number }) => (isTronTrace ? Number(t.value || 0) || 0 : Number(t.value || 0) / 1e18);
+    const ethIn = incoming.reduce((s, t) => s + amountOf(t), 0);
+    const ethOut = outgoing.reduce((s, t) => s + amountOf(t), 0);
     liveAssessment = riskEngine.calculateWalletRisk({
       incoming: incoming.length,
       outgoing: outgoing.length,
       ethIn,
       ethOut,
       hop: traceResult?.summary?.max_hops ?? 0,
-      txs: allTx,
+      txs: allTx as BackendTxRecord[],
+      network: isTronTrace ? "tron" : "ethereum",
     });
   }
 
@@ -1063,11 +1068,7 @@ function RiskView({
         <div className="empty-state">
           <ShieldCheck size={22} />
           <strong>No risk data yet</strong>
-          <span>
-            {isTronTrace
-              ? "Risk scoring is currently calibrated for Ethereum only and is not available for TRON traces yet."
-              : "Analyze a wallet in the Investigation workspace to see a live, evidence-based risk breakdown here."}
-          </span>
+          <span>Analyze a wallet in the Investigation workspace to see a live, evidence-based risk breakdown here.</span>
         </div>
       </div>
     );
@@ -1086,7 +1087,10 @@ function RiskView({
         </div>
         <div className="risk-hero-copy">
           <h2>{score >= 60 ? "High-confidence suspicious activity" : "Activity requires review"}</h2>
-          <p>Score computed live from this session's fund-flow trace (fan-in/out, velocity, hop depth, error rate, value concentration).</p>
+          <p>
+            Score computed live from this session's {isTronTrace ? "TRON" : "Ethereum"} fund-flow trace (fan-in/out,
+            velocity, hop depth, error rate, value concentration{isTronTrace ? ", asset diversity" : ""}).
+          </p>
           <div className="risk-hero-meta">
             <span>
               <ShieldCheck size={15} /> Live trace-based model

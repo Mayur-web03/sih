@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Copy, Check, ExternalLink, X, ArrowDownLeft, ArrowUpRight, ShieldAlert } from "lucide-react";
-import { shortAddress, formatDateTime, normalizeTimestamp, weiToEth, weiToEthNumber } from "@/lib/format";
+import { shortAddress, formatDateTime, normalizeTimestamp, weiToEthNumber } from "@/lib/format";
 import { riskEngine, type RiskAssessment } from "@/services/risk/RiskEngine";
 import { isTronAddress } from "@/services/api";
 import type { BackendTxRecord } from "@/services/api";
@@ -98,7 +98,6 @@ export function EvidencePanel({
   txs: BackendTxRecord[];
   onClose: () => void;
 }) {
-  // TRON Base58 addresses are case-sensitive; Ethereum addresses are not.
   const isTron = isTronAddress(address);
   const sameAddr = (a?: string, b?: string) =>
     !!a && !!b && (isTron ? a === b : a.toLowerCase() === b.toLowerCase());
@@ -106,25 +105,21 @@ export function EvidencePanel({
   const incoming = txs.filter((t) => sameAddr(t.to, address));
   const outgoing = txs.filter((t) => sameAddr(t.from, address));
 
-  // Ethereum: wei -> ETH.  TRON: value is already a decimal amount.
   const amountOf = (t: BackendTxRecord) => (isTron ? Number(t.value) || 0 : weiToEthNumber(t.value));
 
   const ethIn = incoming.reduce((s, t) => s + amountOf(t), 0);
   const ethOut = outgoing.reduce((s, t) => s + amountOf(t), 0);
 
-  // The risk model is calibrated for ETH volumes -> not applied to TRON.
-  const risk: RiskAssessment | null = isTron
-    ? null
-    : riskEngine.calculateWalletRisk({
-        incoming: incoming.length,
-        outgoing: outgoing.length,
-        ethIn,
-        ethOut,
-        hop,
-        txs,
-      });
+  const risk: RiskAssessment = riskEngine.calculateWalletRisk({
+    incoming: incoming.length,
+    outgoing: outgoing.length,
+    ethIn,
+    ethOut,
+    hop,
+    txs,
+    network: isTron ? "tron" : "ethereum",
+  });
 
-  // TRON: a wallet can move several assets, so totals are shown per asset (never summed together)
   const assetTotals = new Map<string, { in: number; out: number }>();
   if (isTron) {
     txs.forEach((t) => {
@@ -166,169 +161,106 @@ export function EvidencePanel({
 
       <div style={{ padding: "14px 16px", borderBottom: "1px solid #1c2530", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>
-            FORENSIC EVIDENCE{isTron ? " · TRON" : ""}
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-            <code style={{ fontSize: 12, color: "#e6edf3" }}>{shortAddress(address, 8, 6)}</code>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#3fc7f4", letterSpacing: 0.8 }}>EVIDENCE PANEL</span>
+            <span style={{ fontSize: 9, background: "#1c2530", color: "#8798a8", padding: "1px 6px", borderRadius: 4 }}>
+              {isTron ? "TRON" : "ETH"}
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3" }}>{shortAddress(address, 8, 6)}</span>
             <CopyButton text={address} />
+            <a href={addrUrl} target="_blank" rel="noreferrer" style={{ color: "#8798a8" }} title={`View on ${explorerName}`}>
+              <ExternalLink size={13} />
+            </a>
           </div>
         </div>
-        <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#66757f", cursor: "pointer" }}>
+        <button onClick={onClose} style={{ background: "transparent", border: "none", color: "#8798a8", cursor: "pointer" }}>
           <X size={18} />
         </button>
       </div>
 
       <div style={{ padding: "16px", overflowY: "auto", flex: 1 }}>
-        {/* Risk (Ethereum only) */}
-        {risk ? (
-          <>
-            <RiskGauge risk={risk} />
-
-            {risk.signals.length > 0 && (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
-                {risk.signals.map((s, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: s.positive ? "#7fe0ac" : "#c7d2dc" }}>
-                    {s.positive ? <Check size={12} /> : <ShieldAlert size={12} />}
-                    {s.label}
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          <p style={{ fontSize: 11, color: "#66757f", lineHeight: 1.5, margin: 0 }}>
-            Risk scoring is currently calibrated for Ethereum only and is not available for TRON wallets yet.
+        <RiskGauge risk={risk} />
+        {isTron && (
+          <p style={{ fontSize: 10, color: "#66757f", lineHeight: 1.4, margin: "8px 0 0", maxWidth: 220 }}>
+            TRON scoring uses a TRX/token-calibrated model (fan-in/out, velocity, hop depth, value concentration, asset diversity).
           </p>
         )}
 
-        {/* Stats grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 18 }}>
-          <StatBox icon={<ArrowDownLeft size={13} color="#7fe0ac" />} label="Incoming" value={`${incoming.length} tx`} />
-          <StatBox icon={<ArrowUpRight size={13} color="#e7bd74" />} label="Outgoing" value={`${outgoing.length} tx`} />
-          {isTron ? (
-            <>
-              <StatBox label="Network" value="TRON" />
-              <StatBox label="Source" value={hop === 0 ? "Yes" : "No"} />
-            </>
-          ) : (
-            <>
-              <StatBox label="ETH In" value={`${ethIn.toFixed(4)}`} accent="#7fe0ac" />
-              <StatBox label="ETH Out" value={`${ethOut.toFixed(4)}`} accent="#e7bd74" />
-              <StatBox label="Net Flow" value={`${(ethIn - ethOut).toFixed(4)} ETH`} />
-            </>
-          )}
-          <StatBox label="Hop" value={hop === 0 ? "START" : `${Math.abs(hop)}`} />
-        </div>
-
-        {/* TRON: per-asset flow */}
-        {isTron && assetTotals.size > 0 && (
-          <div style={{ marginTop: 16 }}>
-            <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>ASSET FLOW</span>
-            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              {Array.from(assetTotals.entries()).map(([asset, t]) => (
-                <div
-                  key={asset}
-                  style={{ background: "#141c24", border: "1px solid #1c2530", borderRadius: 6, padding: "8px 10px", fontSize: 11, color: "#c7d2dc" }}
-                >
-                  <strong style={{ color: "#e6edf3" }}>{asset}</strong>
-                  <div style={{ marginTop: 3, color: "#8798a8" }}>
-                    In {fmtNum(t.in)} · Out {fmtNum(t.out)} · Net {fmtNum(t.in - t.out)}
-                  </div>
-                </div>
-              ))}
-            </div>
+        {risk.signals.length > 0 && (
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+            {risk.signals.map((s, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: s.positive ? "#7fe0ac" : "#c7d2dc" }}>
+                {s.positive ? <Check size={12} /> : <ShieldAlert size={12} />}
+                {s.label}
+              </div>
+            ))}
           </div>
         )}
 
+        {/* Stats grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 }}>
+          <div style={{ background: "#141c24", padding: 10, borderRadius: 8, border: "1px solid #1c2530" }}>
+            <div style={{ fontSize: 10, color: "#66757f" }}>Hop Distance</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#e6edf3", marginTop: 2 }}>{hop === 0 ? "Start" : `Hop ${Math.abs(hop)}`}</div>
+          </div>
+          <div style={{ background: "#141c24", padding: 10, borderRadius: 8, border: "1px solid #1c2530" }}>
+            <div style={{ fontSize: 10, color: "#66757f" }}>Transactions</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#e6edf3", marginTop: 2 }}>{txs.length} total</div>
+          </div>
+        </div>
+
+        {/* Totals */}
+        <div style={{ marginTop: 16, background: "#141c24", padding: 12, borderRadius: 8, border: "1px solid #1c2530" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#8798a8", marginBottom: 8 }}>VOLUME BREAKDOWN</div>
+          {isTron ? (
+            Array.from(assetTotals.entries()).map(([asset, totals]) => (
+              <div key={asset} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#3fc7f4" }}>{asset}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8798a8", marginTop: 2 }}>
+                  <span>In: {fmtNum(totals.in)}</span>
+                  <span>Out: {fmtNum(totals.out)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#e6edf3" }}>
+              <span>In: {fmtNum(ethIn)} ETH</span>
+              <span>Out: {fmtNum(ethOut)} ETH</span>
+            </div>
+          )}
+        </div>
+
         {/* Transaction list */}
-        <div style={{ marginTop: 20 }}>
-          <span style={{ fontSize: 10, letterSpacing: 1, color: "#66757f", fontWeight: 700 }}>
-            TRANSACTIONS ({sortedTxs.length})
-          </span>
-          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-            {sortedTxs.map((tx, i) => {
-              const isIncoming = sameAddr(tx.to, address);
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#8798a8", marginBottom: 8 }}>OBSERVED TRANSACTIONS ({sortedTxs.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sortedTxs.map((t, i) => {
+              const isIn = sameAddr(t.to, address);
               return (
-                <div
-                  key={tx.tx_hash ?? i}
-                  style={{
-                    background: "#141c24",
-                    border: "1px solid #1c2530",
-                    borderRadius: 6,
-                    padding: "8px 10px",
-                    fontSize: 11,
-                  }}
-                >
+                <div key={i} style={{ background: "#141c24", padding: 10, borderRadius: 6, border: "1px solid #1c2530", fontSize: 11 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 4, color: isIncoming ? "#7fe0ac" : "#e7bd74", fontWeight: 600 }}>
-                      {isIncoming ? <ArrowDownLeft size={11} /> : <ArrowUpRight size={11} />}
-                      {isIncoming ? "IN" : "OUT"}
+                    <span style={{ display: "flex", alignItems: "center", gap: 4, color: isIn ? "#7fe0ac" : "#ff5f7e", fontWeight: 600 }}>
+                      {isIn ? <ArrowDownLeft size={12} /> : <ArrowUpRight size={12} />}
+                      {isIn ? "IN" : "OUT"}
                     </span>
-                    <span style={{ color: "#e6edf3", fontWeight: 600 }}>
-                      {isTron ? `${fmtNum(Number(tx.value) || 0)} ${tx.asset ?? "TRX"}` : `${weiToEth(tx.value)} ETH`}
+                    <span style={{ color: "#e6edf3", fontWeight: 700 }}>
+                      {isTron ? `${fmtNum(Number(t.value) || 0)} ${t.asset || "TRX"}` : `${fmtNum(weiToEthNumber(t.value))} ETH`}
                     </span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 5, color: "#8798a8" }}>
-                    <code>{shortAddress(tx.tx_hash, 8, 6)}</code>
-                    <CopyButton text={tx.tx_hash} />
-                    <a
-                      href={txUrl(tx.tx_hash)}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: "#66757f", display: "inline-flex", marginLeft: "auto" }}
-                      title={`View on ${explorerName}`}
-                    >
-                      <ExternalLink size={12} />
+                  <div style={{ display: "flex", justifyContent: "space-between", color: "#66757f", fontSize: 10, marginTop: 4 }}>
+                    <span>{formatDateTime(normalizeTimestamp(t.timestamp))}</span>
+                    <a href={txUrl(t.tx_hash)} target="_blank" rel="noreferrer" style={{ color: "#3fc7f4", textDecoration: "none" }}>
+                      Hash <ExternalLink size={9} />
                     </a>
                   </div>
-                  <div style={{ marginTop: 3, color: "#5a6771", fontSize: 10 }}>
-                    {formatDateTime(normalizeTimestamp(tx.timestamp))} · Block {tx.block_number}
-                  </div>
-                  {isTron && tx.contract_address && (
-                    <div style={{ marginTop: 3, color: "#5a6771", fontSize: 10 }}>
-                      Contract {shortAddress(tx.contract_address, 6, 4)}
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
         </div>
-
-        <a
-          href={addrUrl}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            marginTop: 16,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            padding: "8px",
-            background: "#1c2530",
-            border: "1px solid #283440",
-            borderRadius: 6,
-            color: "#c7d2dc",
-            fontSize: 11,
-            textDecoration: "none",
-          }}
-        >
-          <ExternalLink size={13} /> View wallet on {explorerName}
-        </a>
       </div>
     </aside>
-  );
-}
-
-function StatBox({ icon, label, value, accent }: { icon?: React.ReactNode; label: string; value: string; accent?: string }) {
-  return (
-    <div style={{ background: "#141c24", border: "1px solid #1c2530", borderRadius: 6, padding: "8px 10px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "#66757f", textTransform: "uppercase" }}>
-        {icon} {label}
-      </div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: accent ?? "#e6edf3", marginTop: 2 }}>{value}</div>
-    </div>
   );
 }
