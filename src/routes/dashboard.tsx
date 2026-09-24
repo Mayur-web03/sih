@@ -435,6 +435,8 @@ function PageHeader({
     integrations: "Integrations & settings",
   };
 
+  // Re-render every few seconds so "Indexers synced Xs/min ago" stays live
+  // without needing a fresh network call.
   const [, forceTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 5_000);
@@ -1085,6 +1087,7 @@ function RiskView({
   if (tracedAddress && allTx.length > 0) {
     const incoming = allTx.filter((t) => (t.direction as string) === "inward" || (t.direction as string) === "in");
     const outgoing = allTx.filter((t) => (t.direction as string) === "outward" || (t.direction as string) === "out");
+    // Ethereum: wei -> ETH. TRON: value is already a decimal amount (TRX/token units).
     const amountOf = (t: { value?: string | number }) => (isTronTrace ? Number(t.value || 0) || 0 : Number(t.value || 0) / 1e18);
     const ethIn = incoming.reduce((s, t) => s + amountOf(t), 0);
     const ethOut = outgoing.reduce((s, t) => s + amountOf(t), 0);
@@ -1269,7 +1272,7 @@ function TimelineView({ traceResult, tracedAddress }: { traceResult: TraceRespon
   }
 
   const allTx = [...(traceResult.inward || []), ...(traceResult.outward || [])].sort(
-    (a, b) => new Date(normalizeTimestamp(a.timestamp)).getTime() - new Date(normalizeTimestamp(b.timestamp)).getTime()
+    (a, b) => new Date(normalizeTimestamp(a.timestamp)).getTime() - new Date(normalizeTimestamp(a.timestamp)).getTime()
   );
 
   return (
@@ -1593,7 +1596,9 @@ function ReportsView({
     setBusyRequestId(request.id);
 
     try {
-      await approveFreezeRequest(request.id);
+      await approveFreezeRequest(request.id, {
+        reviewer: "supervisor_admin",
+      });
 
       const requests = await getCaseFreezeRequests(request.case_id);
       setFreezeRequests(requests);
@@ -1611,29 +1616,27 @@ function ReportsView({
     }
   };
 
-  const handleReject = async (request: FreezeRequest) => {
-    const reason = rejectionReason.trim();
+  const handleRejectSubmit = async () => {
+    if (!actionRequestId || !selectedCase) return;
 
-    if (!reason) {
-      onToast("Rejection reason is required");
-      return;
-    }
-
-    setBusyRequestId(request.id);
+    setBusyRequestId(actionRequestId);
 
     try {
-      await rejectFreezeRequest(request.id, reason);
+      await rejectFreezeRequest(actionRequestId, {
+        rejection_reason: rejectionReason || "Rejected by supervisor",
+        reviewer: "supervisor_admin",
+      });
 
-      const requests = await getCaseFreezeRequests(request.case_id);
+      const requests = await getCaseFreezeRequests(selectedCase.id);
       setFreezeRequests(requests);
 
-      const audit = await getFreezeRequestAudit(request.id);
+      const audit = await getFreezeRequestAudit(actionRequestId);
       setAuditEntries(audit);
 
-      setRejectionReason("");
+      onToast(`Freeze request #${actionRequestId} rejected`);
       setShowRejectDialog(false);
-
-      onToast(`Freeze request #${request.id} rejected`);
+      setRejectionReason("");
+      setActionRequestId(null);
     } catch (err) {
       onToast(
         err instanceof Error ? err.message : "Could not reject freeze request",
@@ -1643,34 +1646,29 @@ function ReportsView({
     }
   };
 
-  const handleExecute = async (request: FreezeRequest) => {
-    const reference = executionReference.trim();
+  const handleExecuteSubmit = async () => {
+    if (!actionRequestId || !selectedCase) return;
 
-    if (!reference) {
-      onToast("Execution reference is required");
-      return;
-    }
-
-    setBusyRequestId(request.id);
+    setBusyRequestId(actionRequestId);
 
     try {
-      await executeFreezeRequest(
-        request.id,
-        reference,
-        executionDetails.trim() || undefined,
-      );
+      await executeFreezeRequest(actionRequestId, {
+        execution_reference: executionReference || "DEF-EXEC-001",
+        execution_details: executionDetails || "Completed on-chain freeze operation",
+        executed_by: "fiu_liaison",
+      });
 
-      const requests = await getCaseFreezeRequests(request.case_id);
+      const requests = await getCaseFreezeRequests(selectedCase.id);
       setFreezeRequests(requests);
 
-      const audit = await getFreezeRequestAudit(request.id);
+      const audit = await getFreezeRequestAudit(actionRequestId);
       setAuditEntries(audit);
 
+      onToast(`Freeze request #${actionRequestId} executed`);
+      setShowExecuteDialog(false);
       setExecutionReference("");
       setExecutionDetails("");
-      setShowExecuteDialog(false);
-
-      onToast(`Freeze request #${request.id} marked Executed`);
+      setActionRequestId(null);
     } catch (err) {
       onToast(
         err instanceof Error ? err.message : "Could not execute freeze request",
@@ -1680,158 +1678,86 @@ function ReportsView({
     }
   };
 
+  const handleDownloadFreezePdf = async (requestId: number) => {
+    try {
+      await downloadFreezeRequest(requestId);
+      onToast(`Freeze request #${requestId} PDF downloaded`);
+    } catch (err) {
+      onToast(
+        err instanceof Error ? err.message : "Freeze PDF download failed",
+      );
+    }
+  };
+
+  if (!selectedCase) {
+    return (
+      <div className="view-stack">
+        <div className="empty-state">
+          <Zap size={22} />
+          <strong>No active case selected</strong>
+          <span>Select a case to manage reports and freeze requests.</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="view-stack">
       <div className="report-hero panel">
         <div>
-          <span className="eyebrow">CASE ACTION CENTER</span>
-          <h2>Turn analysis into action</h2>
+          <span className="eyebrow">CASE DOSSIER</span>
+          <h2>{selectedCase.id}</h2>
           <p>
-            {selectedCase
-              ? `Select actions to generate PDF reports or DB freeze requests for ${selectedCase.id}.`
-              : "Select a case to generate an official investigation report or DB-backed freeze request."}
+            {selectedCase.victim_name ?? "Complainant"} ·{" "}
+            {selectedCase.fraud_type ?? "Unclassified"} ·{" "}
+            {formatInr(selectedCase.amount_inr ?? 0, true)}
           </p>
         </div>
         <div className="report-actions">
-          <button
-            className="primary-button"
-            disabled={!selectedCase}
-            onClick={handleReport}
-          >
-            <FileText size={16} /> Generate report
+          <button className="primary-button" onClick={handleReport}>
+            <Zap size={16} /> Generate report PDF
           </button>
-          <button
-            className="secondary-button"
-            disabled={!selectedCase}
-            onClick={handleFreeze}
-          >
-            <ShieldCheck size={16} /> Generate freeze request
+          <button className="secondary-button" onClick={handleFreeze}>
+            <ShieldCheck size={16} /> Create freeze request
           </button>
         </div>
       </div>
 
-      {reportGenerated && (
-        <section className="panel report-list">
-          <SectionHeading title="Recent outputs" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
-            <div
-              className="report-output-row"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 16,
-                padding: "12px 16px",
-                background: "rgba(255, 255, 255, 0.03)",
-                borderRadius: 8,
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                width: "100%",
-                boxSizing: "border-box",
-              }}
-            >
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <strong style={{ display: "block", color: "#fff", fontSize: 14 }}>
-                  Investigation Report
-                </strong>
-                <span style={{ fontSize: 12, color: "#8798a8" }}>
-                  PDF generated and downloaded successfully.
-                </span>
-              </div>
-              <button
-                onClick={handleReport}
-                className="secondary-button"
-                style={{ padding: "6px 12px", fontSize: 12, flexShrink: 0 }}
-              >
-                Generate again
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
       <section className="panel report-list">
-        <SectionHeading title="Freeze Requests" />
+        <SectionHeading title="Freeze Requests & Compliance Workflows" />
 
         {freezeRequests.length === 0 ? (
           <div className="empty-state">
             <ShieldCheck size={22} />
-            <strong>No freeze requests for this case.</strong>
-            <span>
-              Create a freeze request after completing the investigation and risk
-              assessment.
-            </span>
+            <strong>No freeze requests yet</strong>
+            <span>Create a request to initiate emergency preservation or freezing.</span>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
-            {freezeRequests.map((req) => (
-              <div
-                key={req.id}
-                style={{
-                  padding: 16,
-                  background: "rgba(255, 255, 255, 0.02)",
-                  border: "1px solid rgba(255, 255, 255, 0.08)",
-                  borderRadius: 8,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          freezeRequests.map((req) => (
+            <div key={req.id} className="report-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div className="report-file">
+                  <ShieldCheck size={18} />
                   <div>
-                    <strong style={{ fontSize: 14, color: "#fff" }}>Request #{req.id}</strong>
-                    <span style={{ fontSize: 12, color: "#8798a8", marginLeft: 8 }}>
-                      Created: {formatDate(req.created_at)}
-                    </span>
+                    <strong>Request #{req.id} · Case {req.case_id}</strong>
+                    <span>Status: {req.status} · Triggered by: {req.triggered_by}</span>
                   </div>
-                  <span
-                    className={`status-tag status-${req.status.toLowerCase().replace(" ", "-")}`}
-                    style={{ textTransform: "capitalize" }}
-                  >
-                    {req.status}
-                  </span>
                 </div>
-
-                <div style={{ fontSize: 12, color: "#c4d0d9" }}>
-                  <strong>Reason:</strong> {req.reason}
-                </div>
-
-                {req.rejection_reason && (
-                  <div style={{ fontSize: 12, color: "#ff8a8c" }}>
-                    <strong>Rejection Reason:</strong> {req.rejection_reason}
-                  </div>
-                )}
-
-                {req.execution_reference && (
-                  <div style={{ fontSize: 12, color: "#7fe0ac" }}>
-                    <strong>Execution Ref:</strong> {req.execution_reference}
-                  </div>
-                )}
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                  <button
-                    className="secondary-button"
-                    style={{ padding: "4px 10px", fontSize: 11 }}
-                    onClick={() => downloadFreezeRequest(req.id)}
-                  >
-                    Download Form (PDF)
-                  </button>
-
-                  {req.status === "Pending" && (
+                <div style={{ display: "flex", gap: 8 }}>
+                  {req.status === "pending" && (
                     <button
                       className="secondary-button"
-                      style={{ padding: "4px 10px", fontSize: 11 }}
                       disabled={busyRequestId === req.id}
                       onClick={() => handleMoveToReview(req)}
                     >
-                      Move to Review
+                      Move to review
                     </button>
                   )}
 
-                  {(req.status === "Pending" || req.status === "In Review") && (
+                  {req.status === "under_review" && (
                     <>
                       <button
                         className="primary-button"
-                        style={{ padding: "4px 10px", fontSize: 11 }}
                         disabled={busyRequestId === req.id}
                         onClick={() => handleApprove(req)}
                       >
@@ -1839,7 +1765,6 @@ function ReportsView({
                       </button>
                       <button
                         className="secondary-button"
-                        style={{ padding: "4px 10px", fontSize: 11, color: "#ff8a8c", borderColor: "#754345" }}
                         disabled={busyRequestId === req.id}
                         onClick={() => {
                           setActionRequestId(req.id);
@@ -1851,88 +1776,92 @@ function ReportsView({
                     </>
                   )}
 
-                  {req.status === "Approved" && (
+                  {req.status === "approved" && (
                     <button
                       className="primary-button"
-                      style={{ padding: "4px 10px", fontSize: 11 }}
                       disabled={busyRequestId === req.id}
                       onClick={() => {
                         setActionRequestId(req.id);
                         setShowExecuteDialog(true);
                       }}
                     >
-                      Mark Executed
+                      Mark executed
                     </button>
                   )}
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => handleDownloadFreezePdf(req.id)}
+                  >
+                    Download PDF
+                  </button>
                 </div>
               </div>
-            ))}
-          </div>
+
+              {req.rejection_reason && (
+                <div style={{ color: "#ff8a8c", fontSize: 11 }}>
+                  Rejection reason: {req.rejection_reason}
+                </div>
+              )}
+
+              {req.execution_reference && (
+                <div style={{ color: "#7fe0ac", fontSize: 11 }}>
+                  Execution Ref: {req.execution_reference} — {req.execution_details}
+                </div>
+              )}
+            </div>
+          ))
         )}
       </section>
 
       {auditEntries.length > 0 && (
-        <section className="panel report-list" style={{ marginTop: 16 }}>
-          <SectionHeading title="Audit Log (Latest Request)" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
-            {auditEntries.map((audit) => (
-              <div
-                key={audit.id}
-                style={{
-                  fontSize: 11,
-                  padding: "8px 12px",
-                  background: "rgba(0,0,0,0.2)",
-                  borderRadius: 4,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  color: "#8798a8",
-                }}
-              >
-                <span>
-                  <strong style={{ color: "#d7e1e8" }}>{audit.action}</strong> by {audit.performed_by}
-                  {audit.notes ? ` — ${audit.notes}` : ""}
-                </span>
-                <span>{formatDateTime(audit.timestamp)}</span>
+        <section className="panel report-list">
+          <SectionHeading title="Freeze Audit Log" />
+          {auditEntries.map((log) => (
+            <div key={log.id} className="report-row">
+              <div className="report-file">
+                <div>
+                  <strong>
+                    {log.action.toUpperCase()} by {log.performed_by}
+                  </strong>
+                  <span>{formatDateTime(log.created_at)}</span>
+                </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </section>
       )}
 
-      {showRejectDialog && actionRequestId && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.7)",
-            display: "grid",
-            placeItems: "center",
-            zIndex: 100,
-          }}
-        >
-          <div
-            className="panel"
-            style={{ width: 400, padding: 20, display: "flex", flexDirection: "column", gap: 12 }}
-          >
+      {showRejectDialog && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.6)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 100,
+        }}>
+          <div className="panel" style={{ width: 400, padding: 20 }}>
             <h3>Reject Freeze Request #{actionRequestId}</h3>
             <textarea
               className="text-input"
+              style={{ width: "100%", height: 80, margin: "12px 0" }}
               placeholder="Reason for rejection..."
-              rows={3}
               value={rejectionReason}
               onChange={(e) => setRejectionReason(e.target.value)}
             />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="secondary-button" onClick={() => setShowRejectDialog(false)}>
-                Cancel
-              </button>
               <button
-                className="primary-button"
+                className="secondary-button"
                 onClick={() => {
-                  const req = freezeRequests.find((r) => r.id === actionRequestId);
-                  if (req) handleReject(req);
+                  setShowRejectDialog(false);
+                  setActionRequestId(null);
                 }}
               >
+                Cancel
+              </button>
+              <button className="primary-button" onClick={handleRejectSubmit}>
                 Confirm Rejection
               </button>
             </div>
@@ -1940,46 +1869,43 @@ function ReportsView({
         </div>
       )}
 
-      {showExecuteDialog && actionRequestId && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.7)",
-            display: "grid",
-            placeItems: "center",
-            zIndex: 100,
-          }}
-        >
-          <div
-            className="panel"
-            style={{ width: 400, padding: 20, display: "flex", flexDirection: "column", gap: 12 }}
-          >
+      {showExecuteDialog && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.6)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 100,
+        }}>
+          <div className="panel" style={{ width: 400, padding: 20 }}>
             <h3>Execute Freeze Request #{actionRequestId}</h3>
             <input
               className="text-input"
-              placeholder="Execution Reference / Order ID"
+              style={{ width: "100%", margin: "12px 0 8px 0" }}
+              placeholder="Execution Reference Code (e.g. EXEC-1234)"
               value={executionReference}
               onChange={(e) => setExecutionReference(e.target.value)}
             />
             <textarea
               className="text-input"
-              placeholder="Execution details (optional)..."
-              rows={3}
+              style={{ width: "100%", height: 60, marginBottom: 12 }}
+              placeholder="Execution Details / Notes..."
               value={executionDetails}
               onChange={(e) => setExecutionDetails(e.target.value)}
             />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="secondary-button" onClick={() => setShowExecuteDialog(false)}>
-                Cancel
-              </button>
               <button
-                className="primary-button"
+                className="secondary-button"
                 onClick={() => {
-                  const req = freezeRequests.find((r) => r.id === actionRequestId);
-                  if (req) handleExecute(req);
+                  setShowExecuteDialog(false);
+                  setActionRequestId(null);
                 }}
               >
+                Cancel
+              </button>
+              <button className="primary-button" onClick={handleExecuteSubmit}>
                 Confirm Execution
               </button>
             </div>
@@ -1995,69 +1921,51 @@ function IntegrationsView({ onToast }: { onToast: (text: string) => void }) {
     <div className="view-stack">
       <div className="integration-head">
         <div>
-          <h2>Connected Intelligence & Integrations</h2>
-          <p>Manage node indexers, exchange compliance gateways, and regulatory reporting channels.</p>
+          <h2>Integrations & Datasources</h2>
+          <p>Manage node endpoints, API connections, and intelligence providers.</p>
         </div>
-        <button className="secondary-button" onClick={() => onToast("API Key refreshed successfully")}>
-          Refresh API Keys
-        </button>
       </div>
-      <div className="integration-grid">
+      <section className="integration-grid">
         {integrations.map((item) => (
           <div className="panel integration-card" key={item.name}>
             <div className="integration-icon">
               <Database size={18} />
             </div>
-            <div style={{ flex: 1 }}>
+            <div>
               <div className="integration-title">
                 <strong>{item.name}</strong>
                 <span className={`integration-status ${item.status.toLowerCase()}`}>{item.status}</span>
               </div>
               <p>{item.type}</p>
-              <small>Last ping: {item.lastSync}</small>
+              <small>Last synced: {item.lastSync}</small>
             </div>
           </div>
         ))}
-      </div>
+      </section>
     </div>
   );
 }
 
 function DetailDrawer({ title, body, onClose }: { title: string; body: string; onClose: () => void }) {
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.6)",
-        zIndex: 90,
-        display: "flex",
-        justifyContent: "flex-end",
-      }}
-      onClick={onClose}
-    >
-      <div
-        className="panel"
-        style={{
-          width: 420,
-          height: "100%",
-          borderRadius: 0,
-          padding: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 16,
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h3 style={{ margin: 0, fontSize: 16 }}>{title}</h3>
-          <button className="secondary-button" style={{ padding: "4px 8px" }} onClick={onClose}>
-            Close
-          </button>
-        </div>
-        <div style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#a6b7c4", lineHeight: 1.6, flex: 1, overflowY: "auto" }}>
-          {body}
-        </div>
+    <div style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.5)",
+      display: "flex",
+      justifyContent: "flex-end",
+      zIndex: 90,
+    }}>
+      <div className="panel" style={{ width: 380, height: "100%", borderRadius: 0, padding: 24, overflowY: "auto" }}>
+        <button
+          className="secondary-button"
+          style={{ float: "right" }}
+          onClick={onClose}
+        >
+          Close
+        </button>
+        <h3 style={{ marginTop: 0 }}>{title}</h3>
+        <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12, color: "#82909d" }}>{body}</pre>
       </div>
     </div>
   );
@@ -2068,11 +1976,12 @@ function NewInvestigationDialog({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (caseData: ApiCase) => void;
+  onSubmit: (createdCase: ApiCase) => void;
 }) {
   const [complaintId, setComplaintId] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
   const [dialogNetwork, setDialogNetwork] = useState<TraceNetwork>("ethereum");
+  const [dialogAssetType, setDialogAssetType] = useState<TronAssetType>("all");
   const [dialogMaxHops, setDialogMaxHops] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -2080,6 +1989,7 @@ function NewInvestigationDialog({
   const handleNetworkChange = (next: TraceNetwork) => {
     setDialogNetwork(next);
     setError("");
+    // TRON tracing is heavier (many API calls per hop) -> cap hops like the workspace does
     if (next === "tron" && dialogMaxHops > 5) setDialogMaxHops(2);
   };
 
@@ -2116,11 +2026,12 @@ function NewInvestigationDialog({
         priority: "Medium",
         auto_trace: true,
         max_hops: dialogMaxHops,
+        ...(dialogNetwork === "tron" ? { asset_type: dialogAssetType } : {}),
       });
 
       onSubmit(createdCase);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create investigation");
+      setError(err instanceof Error ? err.message : "Failed to create investigation case");
     } finally {
       setSubmitting(false);
     }
@@ -2131,25 +2042,15 @@ function NewInvestigationDialog({
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0, 0, 0, 0.7)",
-        display: "grid",
-        placeItems: "center",
+        background: "rgba(0,0,0,0.6)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         zIndex: 100,
       }}
-      onClick={onClose}
     >
-      <div
-        className="panel"
-        style={{ width: 440, padding: 24 }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <SectionHeading title="New Investigation Intake" />
-        {error && (
-          <div className="alert-box" style={{ marginBottom: 12 }}>
-            <AlertTriangle size={15} />
-            <p style={{ margin: 0 }}>{error}</p>
-          </div>
-        )}
+      <div className="panel" style={{ width: 420, padding: 24 }}>
+        <h3 style={{ marginTop: 0, marginBottom: 16 }}>New Investigation Intake</h3>
         <form
           onSubmit={handleSubmit}
           style={{ display: "flex", flexDirection: "column", gap: 12 }}
@@ -2189,7 +2090,7 @@ function NewInvestigationDialog({
           />
 
           <label className="case-select">
-            <span>Initial Trace Hops</span>
+            <span>Trace depth (hops)</span>
             <select
               className="text-input"
               value={dialogMaxHops}
@@ -2202,6 +2103,27 @@ function NewInvestigationDialog({
               ))}
             </select>
           </label>
+
+          {dialogNetwork === "tron" && (
+            <label className="case-select">
+              <span>Asset</span>
+              <select
+                className="text-input"
+                value={dialogAssetType}
+                onChange={(e) => setDialogAssetType(e.target.value as TronAssetType)}
+              >
+                <option value="all">All</option>
+                <option value="trx">TRX</option>
+                <option value="trc20">TRC20</option>
+              </select>
+            </label>
+          )}
+
+          {error && (
+            <div style={{ fontSize: 12, color: "#ff6b6b" }}>
+              {error}
+            </div>
+          )}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
             <button
@@ -2217,7 +2139,7 @@ function NewInvestigationDialog({
               className="primary-button"
               disabled={submitting}
             >
-              {submitting ? "Creating..." : "Start Investigation"}
+              {submitting ? "Creating..." : "Create Case"}
             </button>
           </div>
         </form>
