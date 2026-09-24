@@ -38,13 +38,21 @@ export function formatDateTime(iso: string): string {
   return `${formatDate(iso)}, ${formatTime(iso)}`;
 }
 
-export function relativeTime(iso: string, now = new Date("2026-09-08T09:47:00+05:30")): string {
-  const diff = (now.getTime() - new Date(iso).getTime()) / 1000;
+export function relativeTime(
+  iso: string | Date | null | undefined,
+  now = new Date()
+): string {
+  if (!iso) return "never";
+  const dateObj = typeof iso === "string" ? new Date(iso) : iso;
+  const diff = (now.getTime() - dateObj.getTime()) / 1000;
+
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} h ago`;
   return `${Math.floor(diff / 86400)} d ago`;
 }
+
+export const timeAgo = relativeTime;
 
 export const chainMeta: Record<Chain, { short: string; symbol: string }> = {
   Ethereum: { short: "ETH", symbol: "Ξ" },
