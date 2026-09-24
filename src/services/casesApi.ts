@@ -29,6 +29,8 @@ export type CreateCaseInput = {
   assigned_investigator?: string;
   auto_trace?: boolean;
   max_hops?: number;
+  /** Only meaningful when chain is "TRON": "all" | "trx" | "trc20". */
+  asset_type?: string;
 };
 
 export type UpdateCaseInput = Partial<{
@@ -41,10 +43,57 @@ export type UpdateCaseInput = Partial<{
   amount_inr: number;
 }>;
 
+/**
+ * FastAPI error bodies come in a few shapes:
+ *  - { detail: "some string" }
+ *  - { detail: [{ loc: [...], msg: "...", type: "..." }, ...] }  (422 validation errors)
+ *  - { detail: { msg: "..." } }
+ *  - sometimes no JSON body at all
+ *
+ * Passing the raw object/array straight into `new Error(...)` stringifies it
+ * as "[object Object]" (or "[object Object],[object Object]" for arrays),
+ * which is what was showing up in the New Investigation dialog. This always
+ * returns a plain, readable string instead.
+ */
+function extractErrorMessage(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+
+  if (Array.isArray(detail) && detail.length > 0) {
+    const joined = detail
+      .map((d) => {
+        if (typeof d === "string") return d;
+        if (d && typeof d === "object" && "msg" in (d as Record<string, unknown>)) {
+          const loc = Array.isArray((d as any).loc) ? (d as any).loc.filter((p: unknown) => p !== "body").join(".") : "";
+          const msg = String((d as { msg?: string }).msg ?? "");
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("; ");
+    if (joined) return joined;
+  }
+
+  if (detail && typeof detail === "object" && "msg" in (detail as Record<string, unknown>)) {
+    const msg = String((detail as { msg?: string }).msg ?? "");
+    if (msg) return msg;
+  }
+
+  if (typeof (body as any)?.message === "string" && (body as any).message.trim()) {
+    return (body as any).message;
+  }
+
+  return `Request failed (${status})`;
+}
+
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Request failed (${res.status})`);
+    throw new Error(extractErrorMessage(err, res.status));
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json();
