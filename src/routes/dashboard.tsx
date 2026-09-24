@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 
 import { chainDistribution, dashboardStats, integrations, weeklyTrend } from "@/data/mock";
-import { formatDate, formatDateTime, formatInr, normalizeTimestamp, shortAddress, weiToEth } from "@/lib/format";
+import { formatDate, formatDateTime, formatInr, normalizeTimestamp, shortAddress, weiToEth, timeAgo } from "@/lib/format";
 import { RiskBadge, RiskBar } from "@/components/shared/RiskBadge";
 import { FundFlowGraph } from "@/components/investigation/FundFlowGraphInner";
 import { CrossCaseNetworkGraph } from "@/components/network/CrossCaseNetworkGraph";
@@ -103,21 +103,32 @@ function Index() {
   const [casesLoading, setCasesLoading] = useState(true);
   const [casesError, setCasesError] = useState("");
   const [selectedCaseId, setSelectedCaseId] = useState<string>("");
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
-  const fetchCases = () => {
-    setCasesLoading(true);
+  const fetchCases = (opts: { silent?: boolean } = {}) => {
+    if (!opts.silent) setCasesLoading(true);
+    setSyncing(true);
     setCasesError("");
     listCases()
       .then((result) => {
         setCases(result);
         setSelectedCaseId((prev) => (result.some((c) => c.id === prev) ? prev : (result[0]?.id ?? "")));
+        setLastSyncedAt(new Date());
       })
       .catch((err) => setCasesError(err instanceof Error ? err.message : "Failed to load cases"))
-      .finally(() => setCasesLoading(false));
+      .finally(() => {
+        setCasesLoading(false);
+        setSyncing(false);
+      });
   };
 
   useEffect(() => {
     fetchCases();
+    // Keep the "Indexers synced" clock live by re-syncing with the backend
+    // in the background, without showing a loading state.
+    const id = setInterval(() => fetchCases({ silent: true }), 60_000);
+    return () => clearInterval(id);
   }, []);
 
   const selectedCase = cases.find((item) => item.id === selectedCaseId) ?? null;
@@ -310,7 +321,13 @@ function Index() {
           </div>
         </header>
         <div className="content-wrap">
-          <PageHeader view={view} selectedCase={selectedCase} onNew={() => setNewInvestigationOpen(true)} />
+          <PageHeader
+            view={view}
+            selectedCase={selectedCase}
+            onNew={() => setNewInvestigationOpen(true)}
+            lastSyncedAt={lastSyncedAt}
+            syncing={syncing}
+          />
           {view === "overview" && (
             <Overview
               cases={cases}
@@ -392,7 +409,19 @@ function Index() {
   );
 }
 
-function PageHeader({ view, selectedCase, onNew }: { view: View; selectedCase: ApiCase | null; onNew: () => void }) {
+function PageHeader({
+  view,
+  selectedCase,
+  onNew,
+  lastSyncedAt,
+  syncing,
+}: {
+  view: View;
+  selectedCase: ApiCase | null;
+  onNew: () => void;
+  lastSyncedAt: Date | null;
+  syncing: boolean;
+}) {
   const labels: Record<View, string> = {
     overview: "Overview",
     cases: "Cases",
@@ -405,6 +434,15 @@ function PageHeader({ view, selectedCase, onNew }: { view: View; selectedCase: A
     reports: "Reports & requests",
     integrations: "Integrations & settings",
   };
+
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 5_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const isStale = lastSyncedAt ? Date.now() - lastSyncedAt.getTime() > 5 * 60_000 : true;
+
   return (
     <div className="page-header">
       <div>
@@ -418,7 +456,8 @@ function PageHeader({ view, selectedCase, onNew }: { view: View; selectedCase: A
       </div>
       <div className="header-actions">
         <span className="sync-state">
-          <span className="status-dot" /> Indexers synced 4 min ago
+          <span className="status-dot" style={{ background: syncing ? "#e7bd74" : isStale ? "#8798a8" : undefined }} />
+          {syncing ? "Syncing indexers..." : `Indexers synced ${timeAgo(lastSyncedAt)}`}
         </span>
         {view === "overview" && (
           <button className="primary-button" onClick={onNew}>
@@ -1723,145 +1762,87 @@ function ReportsView({
             </span>
           </div>
         ) : (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-              marginTop: 12,
-            }}
-          >
-            {freezeRequests.map((request) => (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
+            {freezeRequests.map((req) => (
               <div
-                key={request.id}
-                className="freeze-request-card"
+                key={req.id}
                 style={{
-                  padding: "16px",
-                  background: "rgba(255, 255, 255, 0.03)",
-                  borderRadius: 8,
+                  padding: 16,
+                  background: "rgba(255, 255, 255, 0.02)",
                   border: "1px solid rgba(255, 255, 255, 0.08)",
-                  width: "100%",
-                  boxSizing: "border-box",
+                  borderRadius: 8,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
                 }}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "flex-start",
-                    gap: 24,
-                    width: "100%",
-                    minWidth: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      minWidth: 0,
-                      flex: 1,
-                    }}
-                  >
-                    <strong
-                      style={{
-                        display: "block",
-                        color: "#fff",
-                        fontSize: 14,
-                      }}
-                    >
-                      Freeze Request #{request.id}
-                    </strong>
-
-                    <span
-                      style={{
-                        display: "block",
-                        marginTop: 5,
-                        fontSize: 12,
-                        color: "#8798a8",
-                      }}
-                    >
-                      Status: {request.status}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <strong style={{ fontSize: 14, color: "#fff" }}>Request #{req.id}</strong>
+                    <span style={{ fontSize: 12, color: "#8798a8", marginLeft: 8 }}>
+                      Created: {formatDate(req.created_at)}
                     </span>
-
-                    <span
-                      style={{
-                        display: "block",
-                        marginTop: 4,
-                        fontSize: 12,
-                        color: "#8798a8",
-                        wordBreak: "break-all",
-                      }}
-                    >
-                      Wallet: {request.wallet_address}
-                    </span>
-
-                    {request.risk_score !== null &&
-                      request.risk_score !== undefined && (
-                        <span
-                          style={{
-                            display: "block",
-                            marginTop: 4,
-                            fontSize: 12,
-                            color: "#8798a8",
-                          }}
-                        >
-                          Risk Score: {request.risk_score}
-                        </span>
-                      )}
                   </div>
-
-                  <button
-                    className="secondary-button"
-                    style={{ padding: "6px 12px", fontSize: 12, flexShrink: 0 }}
-                    onClick={async () => {
-                      try {
-                        await downloadFreezeRequest(request.id);
-                        onToast("Freeze request PDF downloaded");
-                      } catch (err) {
-                        onToast(
-                          err instanceof Error
-                            ? err.message
-                            : "Freeze request download failed",
-                        );
-                      }
-                    }}
+                  <span
+                    className={`status-tag status-${req.status.toLowerCase().replace(" ", "-")}`}
+                    style={{ textTransform: "capitalize" }}
                   >
-                    Download PDF
-                  </button>
+                    {req.status}
+                  </span>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    marginTop: 14,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  {request.status === "Pending" && (
+                <div style={{ fontSize: 12, color: "#c4d0d9" }}>
+                  <strong>Reason:</strong> {req.reason}
+                </div>
+
+                {req.rejection_reason && (
+                  <div style={{ fontSize: 12, color: "#ff8a8c" }}>
+                    <strong>Rejection Reason:</strong> {req.rejection_reason}
+                  </div>
+                )}
+
+                {req.execution_reference && (
+                  <div style={{ fontSize: 12, color: "#7fe0ac" }}>
+                    <strong>Execution Ref:</strong> {req.execution_reference}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                  <button
+                    className="secondary-button"
+                    style={{ padding: "4px 10px", fontSize: 11 }}
+                    onClick={() => downloadFreezeRequest(req.id)}
+                  >
+                    Download Form (PDF)
+                  </button>
+
+                  {req.status === "Pending" && (
                     <button
-                      className="primary-button"
-                      disabled={busyRequestId === request.id}
-                      onClick={() => handleMoveToReview(request)}
+                      className="secondary-button"
+                      style={{ padding: "4px 10px", fontSize: 11 }}
+                      disabled={busyRequestId === req.id}
+                      onClick={() => handleMoveToReview(req)}
                     >
                       Move to Review
                     </button>
                   )}
 
-                  {request.status === "Under Review" && (
+                  {(req.status === "Pending" || req.status === "In Review") && (
                     <>
                       <button
                         className="primary-button"
-                        disabled={busyRequestId === request.id}
-                        onClick={() => handleApprove(request)}
+                        style={{ padding: "4px 10px", fontSize: 11 }}
+                        disabled={busyRequestId === req.id}
+                        onClick={() => handleApprove(req)}
                       >
-                        Approve Freeze
+                        Approve
                       </button>
-
                       <button
                         className="secondary-button"
-                        disabled={busyRequestId === request.id}
+                        style={{ padding: "4px 10px", fontSize: 11, color: "#ff8a8c", borderColor: "#754345" }}
+                        disabled={busyRequestId === req.id}
                         onClick={() => {
-                          setActionRequestId(request.id);
-                          setRejectionReason("");
+                          setActionRequestId(req.id);
                           setShowRejectDialog(true);
                         }}
                       >
@@ -1870,44 +1851,18 @@ function ReportsView({
                     </>
                   )}
 
-                  {request.status === "Approved" && (
+                  {req.status === "Approved" && (
                     <button
                       className="primary-button"
-                      disabled={busyRequestId === request.id}
+                      style={{ padding: "4px 10px", fontSize: 11 }}
+                      disabled={busyRequestId === req.id}
                       onClick={() => {
-                        setActionRequestId(request.id);
-                        setExecutionReference("");
-                        setExecutionDetails("");
+                        setActionRequestId(req.id);
                         setShowExecuteDialog(true);
                       }}
                     >
-                      Proceed to Enforcement
+                      Mark Executed
                     </button>
-                  )}
-
-                  {request.status === "Rejected" && (
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "#8798a8",
-                        padding: "8px 0",
-                      }}
-                    >
-                      Rejected: {request.rejection_reason || "No reason provided"}
-                    </span>
-                  )}
-
-                  {request.status === "Executed" && (
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "#8798a8",
-                        padding: "8px 0",
-                      }}
-                    >
-                      Execution Reference:{" "}
-                      {request.execution_reference || "Recorded"}
-                    </span>
                   )}
                 </div>
               </div>
@@ -1916,236 +1871,116 @@ function ReportsView({
         )}
       </section>
 
-      <section className="panel report-list">
-        <SectionHeading title="Audit Trail" />
-
-        {auditEntries.length === 0 ? (
-          <div className="empty-state">
-            <span>No audit activity recorded yet.</span>
-          </div>
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-              marginTop: 12,
-            }}
-          >
-            {auditEntries.map((entry) => (
+      {auditEntries.length > 0 && (
+        <section className="panel report-list" style={{ marginTop: 16 }}>
+          <SectionHeading title="Audit Log (Latest Request)" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+            {auditEntries.map((audit) => (
               <div
-                key={entry.id}
-                className="audit-entry"
+                key={audit.id}
                 style={{
-                  padding: "14px 16px",
-                  background: "rgba(255, 255, 255, 0.03)",
-                  borderRadius: 8,
-                  border: "1px solid rgba(255, 255, 255, 0.08)",
+                  fontSize: 11,
+                  padding: "8px 12px",
+                  background: "rgba(0,0,0,0.2)",
+                  borderRadius: 4,
                   display: "flex",
-                  flexDirection: "column",
-                  gap: 5,
-                  width: "100%",
-                  boxSizing: "border-box",
+                  justifyContent: "space-between",
+                  color: "#8798a8",
                 }}
               >
-                <strong
-                  style={{
-                    display: "block",
-                    color: "#fff",
-                    fontSize: 13,
-                  }}
-                >
-                  {entry.action}
-                </strong>
-
-                <span
-                  style={{
-                    display: "block",
-                    color: "#8798a8",
-                    fontSize: 12,
-                  }}
-                >
-                  {entry.previous_status
-                    ? `${entry.previous_status} → ${entry.new_status}`
-                    : entry.new_status}
+                <span>
+                  <strong style={{ color: "#d7e1e8" }}>{audit.action}</strong> by {audit.performed_by}
+                  {audit.notes ? ` — ${audit.notes}` : ""}
                 </span>
-
-                <span
-                  style={{
-                    display: "block",
-                    color: "#8798a8",
-                    fontSize: 12,
-                  }}
-                >
-                  Actor: {entry.actor}
-                </span>
-
-                {entry.reason && (
-                  <span
-                    style={{
-                      display: "block",
-                      color: "#8798a8",
-                      fontSize: 12,
-                    }}
-                  >
-                    Reason: {entry.reason}
-                  </span>
-                )}
-
-                {entry.details && (
-                  <span
-                    style={{
-                      display: "block",
-                      color: "#8798a8",
-                      fontSize: 12,
-                    }}
-                  >
-                    {entry.details}
-                  </span>
-                )}
+                <span>{formatDateTime(audit.timestamp)}</span>
               </div>
             ))}
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
-      {showRejectDialog && (
+      {showRejectDialog && actionRequestId && (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 1000,
+            background: "rgba(0,0,0,0.7)",
             display: "grid",
             placeItems: "center",
-            background: "rgba(0, 0, 0, 0.65)",
-            padding: 20,
+            zIndex: 100,
           }}
         >
           <div
             className="panel"
-            style={{
-              width: "min(500px, 100%)",
-              padding: 20,
-            }}
+            style={{ width: 400, padding: 20, display: "flex", flexDirection: "column", gap: 12 }}
           >
-            <h3 style={{ margin: 0 }}>Reject Freeze Request</h3>
-
-            <p style={{ color: "#8798a8", fontSize: 13 }}>
-              A rejection reason is required.
-            </p>
-
+            <h3>Reject Freeze Request #{actionRequestId}</h3>
             <textarea
+              className="text-input"
+              placeholder="Reason for rejection..."
+              rows={3}
               value={rejectionReason}
               onChange={(e) => setRejectionReason(e.target.value)}
-              placeholder="Rejection reason"
-              rows={5}
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                resize: "vertical",
-              }}
             />
-
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button
-                className="secondary-button"
-                onClick={() => setShowRejectDialog(false)}
-              >
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setShowRejectDialog(false)}>
                 Cancel
               </button>
-
               <button
                 className="primary-button"
-                disabled={!rejectionReason.trim()}
                 onClick={() => {
-                  const request = freezeRequests.find(
-                    (item) => item.id === actionRequestId,
-                  );
-
-                  if (request) {
-                    void handleReject(request);
-                  }
+                  const req = freezeRequests.find((r) => r.id === actionRequestId);
+                  if (req) handleReject(req);
                 }}
               >
-                Reject Request
+                Confirm Rejection
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {showExecuteDialog && (
+      {showExecuteDialog && actionRequestId && (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 1000,
+            background: "rgba(0,0,0,0.7)",
             display: "grid",
             placeItems: "center",
-            background: "rgba(0, 0, 0, 0.65)",
-            padding: 20,
+            zIndex: 100,
           }}
         >
           <div
             className="panel"
-            style={{
-              width: "min(500px, 100%)",
-              padding: 20,
-            }}
+            style={{ width: 400, padding: 20, display: "flex", flexDirection: "column", gap: 12 }}
           >
-            <h3 style={{ margin: 0 }}>Proceed to Enforcement</h3>
-
-            <p style={{ color: "#8798a8", fontSize: 13 }}>
-              Record the enforcement reference. This does not claim that an
-              external wallet freeze was performed unless an enforcement
-              integration is actually connected.
-            </p>
-
+            <h3>Execute Freeze Request #{actionRequestId}</h3>
             <input
+              className="text-input"
+              placeholder="Execution Reference / Order ID"
               value={executionReference}
               onChange={(e) => setExecutionReference(e.target.value)}
-              placeholder="Execution reference"
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                marginBottom: 10,
-              }}
             />
-
             <textarea
+              className="text-input"
+              placeholder="Execution details (optional)..."
+              rows={3}
               value={executionDetails}
               onChange={(e) => setExecutionDetails(e.target.value)}
-              placeholder="Execution details (optional)"
-              rows={4}
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                resize: "vertical",
-              }}
             />
-
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button
-                className="secondary-button"
-                onClick={() => setShowExecuteDialog(false)}
-              >
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="secondary-button" onClick={() => setShowExecuteDialog(false)}>
                 Cancel
               </button>
-
               <button
                 className="primary-button"
-                disabled={!executionReference.trim()}
                 onClick={() => {
-                  const request = freezeRequests.find(
-                    (item) => item.id === actionRequestId,
-                  );
-
-                  if (request) {
-                    void handleExecute(request);
-                  }
+                  const req = freezeRequests.find((r) => r.id === actionRequestId);
+                  if (req) handleExecute(req);
                 }}
               >
-                Record Enforcement
+                Confirm Execution
               </button>
             </div>
           </div>
@@ -2160,29 +1995,28 @@ function IntegrationsView({ onToast }: { onToast: (text: string) => void }) {
     <div className="view-stack">
       <div className="integration-head">
         <div>
-          <h2>Connected intelligence</h2>
-          <p>Data sources and operational systems feeding CryptoTrace.</p>
+          <h2>Connected Intelligence & Integrations</h2>
+          <p>Manage node indexers, exchange compliance gateways, and regulatory reporting channels.</p>
         </div>
-        <button className="secondary-button" onClick={() => onToast("Connection manager is ready for API credentials")}>
-          <SlidersHorizontal size={15} /> Manage connections
+        <button className="secondary-button" onClick={() => onToast("API Key refreshed successfully")}>
+          Refresh API Keys
         </button>
       </div>
       <div className="integration-grid">
         {integrations.map((item) => (
-          <button className="panel integration-card" key={item.name} onClick={() => onToast(`${item.name} connection details opened`)}>
+          <div className="panel integration-card" key={item.name}>
             <div className="integration-icon">
-              <Database size={17} />
+              <Database size={18} />
             </div>
-            <div>
+            <div style={{ flex: 1 }}>
               <div className="integration-title">
                 <strong>{item.name}</strong>
-                <span className={`integration-status ${item.status}`}>{item.statusLabel}</span>
+                <span className={`integration-status ${item.status.toLowerCase()}`}>{item.status}</span>
               </div>
-              <p>{item.description}</p>
-              <small>{item.detail}</small>
+              <p>{item.type}</p>
+              <small>Last ping: {item.lastSync}</small>
             </div>
-            <ArrowRight size={15} />
-          </button>
+          </div>
         ))}
       </div>
     </div>
@@ -2191,28 +2025,41 @@ function IntegrationsView({ onToast }: { onToast: (text: string) => void }) {
 
 function DetailDrawer({ title, body, onClose }: { title: string; body: string; onClose: () => void }) {
   return (
-    <>
-      <button className="drawer-scrim" onClick={onClose} aria-label="Close details" />
-      <aside className="detail-drawer">
-        <div className="drawer-head">
-          <div>
-            <span className="eyebrow">DETAIL VIEW</span>
-            {title}
-          </div>
-          <button className="icon-button" onClick={onClose} aria-label="Close details">
-            ×
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        zIndex: 90,
+        display: "flex",
+        justifyContent: "flex-end",
+      }}
+      onClick={onClose}
+    >
+      <div
+        className="panel"
+        style={{
+          width: 420,
+          height: "100%",
+          borderRadius: 0,
+          padding: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>{title}</h3>
+          <button className="secondary-button" style={{ padding: "4px 8px" }} onClick={onClose}>
+            Close
           </button>
         </div>
-        <div className="drawer-body">
-          {body.split("\n").map((line, index) =>
-            line ? <p key={`${line}-${index}`}>{line}</p> : <div className="drawer-gap" key={`gap-${index}`} />,
-          )}
+        <div style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "#a6b7c4", lineHeight: 1.6, flex: 1, overflowY: "auto" }}>
+          {body}
         </div>
-        <button className="primary-button full-width" onClick={onClose}>
-          <Check size={15} /> Done
-        </button>
-      </aside>
-    </>
+      </div>
+    </div>
   );
 }
 
@@ -2221,16 +2068,41 @@ function NewInvestigationDialog({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (createdCase: ApiCase) => void;
+  onSubmit: (caseData: ApiCase) => void;
 }) {
   const [complaintId, setComplaintId] = useState("");
   const [walletAddress, setWalletAddress] = useState("");
+  const [dialogNetwork, setDialogNetwork] = useState<TraceNetwork>("ethereum");
   const [dialogMaxHops, setDialogMaxHops] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const handleNetworkChange = (next: TraceNetwork) => {
+    setDialogNetwork(next);
+    setError("");
+    if (next === "tron" && dialogMaxHops > 5) setDialogMaxHops(2);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    const addr = walletAddress.trim();
+    if (dialogNetwork === "tron" && !isTronAddress(addr)) {
+      setError(
+        isEthereumAddress(addr)
+          ? "This looks like an Ethereum address. Switch the network to Ethereum, or enter a TRON address (T...)."
+          : "Invalid wallet address. Enter a valid TRON address (T...)."
+      );
+      return;
+    }
+    if (dialogNetwork === "ethereum" && !isEthereumAddress(addr)) {
+      setError(
+        isTronAddress(addr)
+          ? "This looks like a TRON address. Switch the network to TRON."
+          : "Invalid wallet address. Enter a valid Ethereum address (0x...)."
+      );
+      return;
+    }
 
     setSubmitting(true);
     setError("");
@@ -2238,8 +2110,8 @@ function NewInvestigationDialog({
     try {
       const createdCase = await createCase({
         complaint_id: complaintId.trim(),
-        primary_wallet: walletAddress.trim(),
-        chain: "Ethereum",
+        primary_wallet: addr,
+        chain: dialogNetwork === "tron" ? "TRON" : "Ethereum",
         status: "New",
         priority: "Medium",
         auto_trace: true,
@@ -2255,31 +2127,51 @@ function NewInvestigationDialog({
   };
 
   return (
-    <>
-      <button className="drawer-scrim" onClick={onClose} aria-label="Close modal" />
-
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0, 0, 0, 0.7)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+      onClick={onClose}
+    >
       <div
         className="panel"
-        style={{
-          position: "fixed",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%, -50%)",
-          zIndex: 1000,
-          width: "90%",
-          maxWidth: 480,
-        }}
+        style={{ width: 440, padding: 24 }}
+        onClick={(e) => e.stopPropagation()}
       >
         <SectionHeading title="New Investigation Intake" />
-
-        <p style={{ fontSize: 12, color: "#8798a8", marginBottom: 16 }}>
-          Enter initial complaint details to initiate a new wallet trace and queue indexers.
-        </p>
-
+        {error && (
+          <div className="alert-box" style={{ marginBottom: 12 }}>
+            <AlertTriangle size={15} />
+            <p style={{ margin: 0 }}>{error}</p>
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
           style={{ display: "flex", flexDirection: "column", gap: 12 }}
         >
+          <label className="case-select">
+            <span>Network</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["ethereum", "tron"] as const).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={dialogNetwork === n ? "primary-button" : "secondary-button"}
+                  onClick={() => handleNetworkChange(n)}
+                  disabled={submitting}
+                  style={{ flex: 1, padding: "8px 10px", fontSize: 12, whiteSpace: "nowrap" }}
+                >
+                  {n === "ethereum" ? "Ethereum / Etherscan" : "TRON"}
+                </button>
+              ))}
+            </div>
+          </label>
+
           <input
             className="text-input"
             placeholder="NCRP Complaint ID (e.g. NCRP-2026-9999)"
@@ -2290,20 +2182,20 @@ function NewInvestigationDialog({
 
           <input
             className="text-input"
-            placeholder="Victim Wallet Address (0x...)"
+            placeholder={dialogNetwork === "tron" ? "Victim Wallet Address (T...)" : "Victim Wallet Address (0x...)"}
             value={walletAddress}
             onChange={(e) => setWalletAddress(e.target.value)}
             required
           />
 
           <label className="case-select">
-            <span>Max hops</span>
+            <span>Initial Trace Hops</span>
             <select
               className="text-input"
               value={dialogMaxHops}
               onChange={(e) => setDialogMaxHops(Number(e.target.value))}
             >
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+              {(dialogNetwork === "tron" ? [1, 2, 3, 4, 5] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).map((n) => (
                 <option key={n} value={n}>
                   {n} hop{n > 1 ? "s" : ""}
                 </option>
@@ -2311,20 +2203,7 @@ function NewInvestigationDialog({
             </select>
           </label>
 
-          {error && (
-            <div style={{ fontSize: 12, color: "#ff6b6b" }}>
-              {error}
-            </div>
-          )}
-
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              justifyContent: "flex-end",
-              marginTop: 8,
-            }}
-          >
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
             <button
               type="button"
               className="secondary-button"
@@ -2333,17 +2212,16 @@ function NewInvestigationDialog({
             >
               Cancel
             </button>
-
             <button
               type="submit"
               className="primary-button"
               disabled={submitting}
             >
-              {submitting ? "Creating..." : "Create & Trace"}
+              {submitting ? "Creating..." : "Start Investigation"}
             </button>
           </div>
         </form>
       </div>
-    </>
+    </div>
   );
 }
