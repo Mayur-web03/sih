@@ -116,7 +116,6 @@ const BUILD_BLOCKS = [
   },
 ];
 
-// Trimmed: only the 2 most important questions per category (was 35 total, now 12)
 const FAQS: { category: string; items: { q: string; a: string }[] }[] = [
   {
     category: "General",
@@ -182,7 +181,7 @@ function HomePage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const goToApp = () => navigate({ to: "/login" });
+  const goToApp = () => navigate({ to: "/dashboard" });
 
   const handleNavClick = (id: string) => {
     scrollTo(id);
@@ -191,7 +190,6 @@ function HomePage() {
 
   return (
     <div style={{ background: BG, color: "#e6ecf1", minHeight: "100vh", fontFamily: "inherit" }}>
-      {/* NAVBAR */}
       <header
         style={{
           position: "sticky",
@@ -242,7 +240,7 @@ function HomePage() {
 
           <div style={{ display: "flex", alignItems: "center", gap: 12 }} className="landing-nav-desktop">
             <button
-              onClick={() => navigate({ to: "/login" })}
+              onClick={goToApp}
               style={{ background: "none", border: "none", color: "#e6ecf1", fontSize: 14, cursor: "pointer" }}
             >
               Login
@@ -298,7 +296,7 @@ function HomePage() {
             <button
               onClick={() => {
                 setMobileOpen(false);
-                navigate({ to: "/login" });
+                goToApp();
               }}
               style={{ background: "none", border: "none", color: "#e6ecf1", fontSize: 15, textAlign: "left", padding: 0 }}
             >
@@ -327,7 +325,6 @@ function HomePage() {
         )}
       </header>
 
-      {/* HERO */}
       <section style={{ maxWidth: 900, margin: "0 auto", padding: "90px 24px 90px", textAlign: "center" }}>
         <div
           style={{
@@ -385,10 +382,8 @@ function HomePage() {
             Explore How It Works
           </button>
         </div>
-        {/* graph/node illustration removed */}
       </section>
 
-      {/* FEATURES */}
       <section id="features" style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
         <SectionHeader eyebrow="CAPABILITIES" title="What CryptoTrace does" />
         <div
@@ -442,7 +437,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* HOW IT WORKS */}
       <section id="how-it-works" style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
         <SectionHeader eyebrow="WORKFLOW" title="How It Works" />
         <div
@@ -471,7 +465,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* TECHNOLOGY -> HOW IT'S BUILT */}
       <section id="technology" style={{ maxWidth: 1200, margin: "0 auto", padding: "60px 24px" }}>
         <SectionHeader eyebrow="ARCHITECTURE" title="How It's Built" />
         <div
@@ -534,7 +527,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* FAQ (trimmed) */}
       <section id="faq" style={{ maxWidth: 860, margin: "0 auto", padding: "60px 24px" }}>
         <SectionHeader eyebrow="FAQ" title="Frequently Asked Questions" />
         <div style={{ marginTop: 32 }}>
@@ -604,7 +596,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* FINAL CTA */}
       <section style={{ maxWidth: 900, margin: "0 auto", padding: "70px 24px", textAlign: "center" }}>
         <div
           style={{
@@ -640,7 +631,6 @@ function HomePage() {
         </div>
       </section>
 
-      {/* FOOTER */}
       <footer style={{ borderTop: `1px solid ${BORDER}`, padding: "36px 24px" }}>
         <div
           style={{
@@ -672,7 +662,7 @@ function HomePage() {
               </button>
             ))}
             <button
-              onClick={() => navigate({ to: "/login" })}
+              onClick={goToApp}
               style={{ background: "none", border: "none", color: MUTED, fontSize: 13, cursor: "pointer", padding: 0 }}
             >
               Login
