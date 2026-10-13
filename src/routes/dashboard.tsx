@@ -1,4 +1,4 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
   Activity,
@@ -67,11 +67,6 @@ import {
 } from "@/services/freezeRequestsApi";
 
 export const Route = createFileRoute("/dashboard")({
-  beforeLoad: () => {
-    if (typeof window !== "undefined" && localStorage.getItem("ct_auth") !== "true") {
-      throw redirect({ to: "/login" });
-    }
-  },
   component: Index,
 });
 
@@ -125,8 +120,6 @@ function Index() {
 
   useEffect(() => {
     fetchCases();
-    // Keep the "Indexers synced" clock live by re-syncing with the backend
-    // in the background, without showing a loading state.
     const id = setInterval(() => fetchCases({ silent: true }), 60_000);
     return () => clearInterval(id);
   }, []);
@@ -435,8 +428,6 @@ function PageHeader({
     integrations: "Integrations & settings",
   };
 
-  // Re-render every few seconds so "Indexers synced Xs/min ago" stays live
-  // without needing a fresh network call.
   const [, forceTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 5_000);
@@ -1087,7 +1078,6 @@ function RiskView({
   if (tracedAddress && allTx.length > 0) {
     const incoming = allTx.filter((t) => (t.direction as string) === "inward" || (t.direction as string) === "in");
     const outgoing = allTx.filter((t) => (t.direction as string) === "outward" || (t.direction as string) === "out");
-    // Ethereum: wei -> ETH. TRON: value is already a decimal amount (TRX/token units).
     const amountOf = (t: { value?: string | number }) => (isTronTrace ? Number(t.value || 0) || 0 : Number(t.value || 0) / 1e18);
     const ethIn = incoming.reduce((s, t) => s + amountOf(t), 0);
     const ethOut = outgoing.reduce((s, t) => s + amountOf(t), 0);
@@ -1272,7 +1262,7 @@ function TimelineView({ traceResult, tracedAddress }: { traceResult: TraceRespon
   }
 
   const allTx = [...(traceResult.inward || []), ...(traceResult.outward || [])].sort(
-    (a, b) => new Date(normalizeTimestamp(a.timestamp)).getTime() - new Date(normalizeTimestamp(a.timestamp)).getTime()
+    (a, b) => new Date(normalizeTimestamp(a.timestamp)).getTime() - new Date(normalizeTimestamp(b.timestamp)).getTime()
   );
 
   return (
@@ -1989,7 +1979,6 @@ function NewInvestigationDialog({
   const handleNetworkChange = (next: TraceNetwork) => {
     setDialogNetwork(next);
     setError("");
-    // TRON tracing is heavier (many API calls per hop) -> cap hops like the workspace does
     if (next === "tron" && dialogMaxHops > 5) setDialogMaxHops(2);
   };
 
